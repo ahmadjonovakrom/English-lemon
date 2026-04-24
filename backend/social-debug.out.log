@@ -1,0 +1,16 @@
+INFO:     127.0.0.1:53853 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49724 - "POST /api/auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:49725 - "POST /api/auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:49726 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49727 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49728 - "POST /api/social/friend-requests HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49757 - "POST /api/auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:49758 - "POST /api/auth/register HTTP/1.1" 201 Created
+INFO:     127.0.0.1:49759 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49760 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49761 - "POST /api/social/requests HTTP/1.1" 201 Created
+INFO:     127.0.0.1:49762 - "POST /api/social/requests/6/accept HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49763 - "POST /api/social/conversations/direct HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49764 - "POST /api/social/conversations/5/challenges HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:49765 - "GET /api/social/conversations/5/messages HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:49766 - "GET /api/social/notifications HTTP/1.1" 200 OK

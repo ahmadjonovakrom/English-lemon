@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: english-lemon
+    env: docker
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: english-lemon-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 10080
+      - key: DATABASE_URL
+        value: sqlite:////app/data/english_lemon.db
+      - key: MEDIA_ROOT
+        value: /app/data/media
+      - key: FRONTEND_DIST_DIR
+        value: /app/frontend/dist

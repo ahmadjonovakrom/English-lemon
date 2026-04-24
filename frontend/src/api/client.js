@@ -7,16 +7,16 @@ const DEFAULT_API_ORIGIN =
     ? window.location.origin
     : "http://127.0.0.1:8000";
 const RAW_API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
   import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.DEV ? `http://${DEFAULT_API_HOST}:8000` : DEFAULT_API_ORIGIN);
 const NORMALIZED_API_BASE_URL = RAW_API_BASE_URL.replace(/\/+$/, "");
-const API_BASE_URL = NORMALIZED_API_BASE_URL.endsWith("/api")
+const API_BASE_URL = /\/api(?:\/v\d+)?$/i.test(NORMALIZED_API_BASE_URL)
   ? NORMALIZED_API_BASE_URL
   : `${NORMALIZED_API_BASE_URL}/api`;
-const API_ORIGIN = API_BASE_URL.endsWith("/api")
-  ? API_BASE_URL.slice(0, -4)
-  : API_BASE_URL;
+const API_ORIGIN = API_BASE_URL.replace(/\/api(?:\/v\d+)?$/i, "");
 const WS_API_BASE_URL = API_BASE_URL.replace(/^http/i, "ws");
+const API_HEALTH_URL = `${API_ORIGIN}/health`;
 
 const TOKEN_STORAGE_KEY = "english_lemon_token";
 const REQUEST_TIMEOUT_MS = 15000;
@@ -220,5 +220,5 @@ const api = {
   }
 };
 
-export { ApiError, buildWebSocketUrl, getAuthToken, toApiAssetUrl };
+export { ApiError, API_BASE_URL, API_HEALTH_URL, buildWebSocketUrl, getAuthToken, toApiAssetUrl };
 export default api;

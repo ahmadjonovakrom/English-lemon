@@ -25,6 +25,10 @@ class Settings:
         ).split(",")
         if origin.strip()
     ]
+    CORS_ORIGIN_REGEX: str | None = os.getenv(
+        "CORS_ORIGIN_REGEX",
+        r"https://.*\.vercel\.app",
+    )
 
 
 settings = Settings()

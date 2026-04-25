@@ -1107,6 +1107,56 @@ function usernameForUser(user) {
   return user?.username ? `@${user.username}` : "@player";
 }
 
+function identityLineForUser(user) {
+  if (typeof user?.email === "string" && user.email.trim()) {
+    return user.email.trim();
+  }
+  return usernameForUser(user);
+}
+
+function SocialSectionSkeleton({ rows = 3 }) {
+  return (
+    <div className="social-state-stack" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, index) => (
+        <div key={index} className="social-skeleton-card">
+          <span className="social-skeleton-avatar" />
+          <div className="social-skeleton-lines">
+            <span className="social-skeleton-line is-title" />
+            <span className="social-skeleton-line" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SocialSectionState({
+  badge,
+  title,
+  description,
+  actionLabel,
+  onAction,
+  actionDisabled = false
+}) {
+  return (
+    <div className="social-empty-card">
+      {badge ? <span className="social-empty-badge">{badge}</span> : null}
+      <h3>{title}</h3>
+      <p className="subtle-text">{description}</p>
+      {actionLabel && onAction ? (
+        <button
+          type="button"
+          className="secondary-btn social-empty-action"
+          onClick={onAction}
+          disabled={actionDisabled}
+        >
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function resolveCallPhaseCopy(phase, callStatus, peerName) {
   const displayName = peerName || "Player";
   if (phase === "outgoing") {
@@ -1452,6 +1502,11 @@ function SocialPage() {
   const [outgoingRequests, setOutgoingRequests] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [totalUnread, setTotalUnread] = useState(0);
+  const [snapshotErrors, setSnapshotErrors] = useState({
+    friends: "",
+    requests: "",
+    conversations: ""
+  });
 
   const [selectedConversationId, setSelectedConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -1677,6 +1732,15 @@ function SocialPage() {
     badges.push(challengeSummary.challengeCount > 0 ? "Challenge Active" : "No Challenges Yet");
     return badges;
   }, [activeConversation, activePeer, challengeSummary.challengeCount]);
+
+  const onlineFriendCount = useMemo(
+    () =>
+      friends.filter((friendship) => {
+        const friendId = friendship?.friend?.id;
+        return friendId && presenceByUserId[friendId]?.is_online;
+      }).length,
+    [friends, presenceByUserId]
+  );
 
   const statusNoteClassName = STATUS_NOTE_ERROR_PATTERN.test(statusNote)
     ? "social-status-note is-error"
@@ -3185,16 +3249,20 @@ function SocialPage() {
       ]);
 
       const errors = [];
+      const nextSnapshotErrors = {
+        friends: "",
+        requests: "",
+        conversations: ""
+      };
 
       if (friendsResult.status === "fulfilled") {
         setFriends(Array.isArray(friendsResult.value) ? friendsResult.value : []);
       } else {
         setFriends([]);
-        errors.push(
-          toErrorMessage(friendsResult.reason, "Unable to load friends.", {
-            forSocialBootstrap: true
-          })
-        );
+        nextSnapshotErrors.friends = toErrorMessage(friendsResult.reason, "Unable to load friends.", {
+          forSocialBootstrap: true
+        });
+        errors.push(nextSnapshotErrors.friends);
       }
 
       if (requestsResult.status === "fulfilled") {
@@ -3207,11 +3275,14 @@ function SocialPage() {
       } else {
         setIncomingRequests([]);
         setOutgoingRequests([]);
-        errors.push(
-          toErrorMessage(requestsResult.reason, "Unable to load friend requests.", {
+        nextSnapshotErrors.requests = toErrorMessage(
+          requestsResult.reason,
+          "Unable to load friend requests.",
+          {
             forSocialBootstrap: true
-          })
+          }
         );
+        errors.push(nextSnapshotErrors.requests);
       }
 
       if (conversationsResult.status === "fulfilled") {
@@ -3234,12 +3305,17 @@ function SocialPage() {
         setConversations([]);
         setTotalUnread(0);
         setSelectedConversationId(null);
-        errors.push(
-          toErrorMessage(conversationsResult.reason, "Unable to load conversations.", {
+        nextSnapshotErrors.conversations = toErrorMessage(
+          conversationsResult.reason,
+          "Unable to load conversations.",
+          {
             forSocialBootstrap: true
-          })
+          }
         );
+        errors.push(nextSnapshotErrors.conversations);
       }
+
+      setSnapshotErrors(nextSnapshotErrors);
 
       if (errors.length) {
         const uniqueErrors = [...new Set(errors)];
@@ -3254,6 +3330,11 @@ function SocialPage() {
       setConversations([]);
       setTotalUnread(0);
       setSelectedConversationId(null);
+      setSnapshotErrors({
+        friends: "",
+        requests: "",
+        conversations: ""
+      });
       setStatusNote(
         toErrorMessage(error, "Unable to load Social Arena.", {
           forSocialBootstrap: true
@@ -3280,7 +3361,14 @@ function SocialPage() {
         }
         return conversationRows[0]?.id ?? null;
       });
+      setSnapshotErrors((previous) => ({ ...previous, conversations: "" }));
     } catch (error) {
+      setSnapshotErrors((previous) => ({
+        ...previous,
+        conversations: toErrorMessage(error, "Unable to refresh conversations.", {
+          forSocialBootstrap: true
+        })
+      }));
       setStatusNote(
         toErrorMessage(error, "Unable to refresh conversations.", {
           forSocialBootstrap: true
@@ -4122,7 +4210,7 @@ function SocialPage() {
         return;
       }
       if (activePeerUnavailableForCall) {
-        setStatusNote(`${activePeer?.display_name ?? "This player"} is already in a call.`);
+        setStatusNote(`${displayNameForUser(activePeer, "This player")} is already in a call.`);
         return;
       }
       void handleStartVoiceCall();
@@ -4151,7 +4239,33 @@ function SocialPage() {
     return (
       <main className="page-shell social-page">
         <section className="social-shell">
-          <div className="loading-text">Loading social arena...</div>
+          <header className="social-header social-skeleton-surface">
+            <div className="social-header-main">
+              <div className="social-skeleton-line is-chip" />
+              <div className="social-skeleton-line is-hero" />
+              <div className="social-skeleton-line is-wide" />
+              <div className="social-header-metrics">
+                <article className="social-skeleton-metric" />
+                <article className="social-skeleton-metric" />
+                <article className="social-skeleton-metric" />
+              </div>
+            </div>
+            <div className="social-header-actions">
+              <div className="social-skeleton-line is-button" />
+              <div className="social-skeleton-line is-button" />
+            </div>
+          </header>
+          <section className="social-layout">
+            <aside className="feature-card social-sidebar">
+              <SocialSectionSkeleton rows={4} />
+            </aside>
+            <section className="feature-card social-chat">
+              <SocialSectionSkeleton rows={5} />
+            </section>
+            <aside className="feature-card social-side-info">
+              <SocialSectionSkeleton rows={3} />
+            </aside>
+          </section>
         </section>
       </main>
     );
@@ -4165,7 +4279,7 @@ function SocialPage() {
             <div className="social-header-kicker-row">
               <span className="brand-mark">English Lemon</span>
               <span className="social-header-chip is-live">Live Arena</span>
-              <span className="social-header-chip">{friends.length} friends connected</span>
+              <span className="social-header-chip">{onlineFriendCount} friends online</span>
             </div>
             <h1>Social Arena</h1>
             <p className="dashboard-subtitle">
@@ -4228,10 +4342,14 @@ function SocialPage() {
                     </button>
                   </div>
 
-                  {notificationsLoading ? <p className="subtle-text">Loading notifications...</p> : null}
+                  {notificationsLoading ? <SocialSectionSkeleton rows={3} /> : null}
                   {notificationsError ? <p className="error-text">{notificationsError}</p> : null}
                   {!notificationsLoading && !notificationsError && notifications.length === 0 ? (
-                    <p className="subtle-text">No notifications yet. Social activity will appear here.</p>
+                    <SocialSectionState
+                      badge="Live Feed"
+                      title="No notifications yet"
+                      description="Friend requests, new messages, call events, and challenge updates will show up here in real time."
+                    />
                   ) : null}
 
                   <div className="social-notification-list">
@@ -4329,7 +4447,7 @@ function SocialPage() {
               </div>
 
               {searchError ? <p className="error-text">{searchError}</p> : null}
-              {isSearching ? <p className="subtle-text">Searching players...</p> : null}
+              {isSearching ? <SocialSectionSkeleton rows={2} /> : null}
 
               <div className="social-list">
                 {searchResults.map((result) => {
@@ -4347,12 +4465,12 @@ function SocialPage() {
                         </span>
                         <div className="social-item-copy">
                           <div className="social-item-title-row">
-                            <p className="social-item-title">{result.user.display_name}</p>
+                            <p className="social-item-title">{displayNameForUser(result.user)}</p>
                             <span className={`social-inline-badge ${relationshipMeta.className}`}>
                               {relationshipMeta.label}
                             </span>
                           </div>
-                          <p className="social-item-subtitle">@{result.user.username}</p>
+                          <p className="social-item-subtitle">{identityLineForUser(result.user)}</p>
                         </div>
                       </div>
 
@@ -4380,7 +4498,7 @@ function SocialPage() {
                             }
                             disabled={isSearchActionLoading}
                           >
-                            Add
+                            Add Friend
                           </button>
                         ) : null}
                         {result.relationship_status === "incoming_request" && result.request_id ? (
@@ -4412,7 +4530,7 @@ function SocialPage() {
                             }
                             disabled={isSearchActionLoading}
                           >
-                            Cancel
+                            Cancel Request
                           </button>
                         ) : null}
                       </div>
@@ -4421,18 +4539,22 @@ function SocialPage() {
                 })}
 
                 {!isSearching && !searchError && searchQuery.trim().length < SEARCH_MIN_CHARS ? (
-                  <p className="subtle-text">
-                    Start typing to find players and build your learning squad.
-                  </p>
+                  <SocialSectionState
+                    badge="Search"
+                    title="Find your next study partner"
+                    description="Search by username or email to send a friend request and start a direct conversation."
+                  />
                 ) : null}
 
                 {!isSearching &&
                 !searchError &&
                 searchQuery.trim().length >= SEARCH_MIN_CHARS &&
                 searchResults.length === 0 ? (
-                  <p className="subtle-text">
-                    No players found. Try another keyword or create another account to test local friend search.
-                  </p>
+                  <SocialSectionState
+                    badge="No Results"
+                    title="No players matched that search"
+                    description="Try another username or email. If you are testing locally, create a second account to see friend search in action."
+                  />
                 ) : null}
               </div>
             </section>
@@ -4442,6 +4564,7 @@ function SocialPage() {
                 <h2>Incoming Requests</h2>
                 <span>{incomingRequests.length}</span>
               </div>
+              {snapshotErrors.requests ? <p className="error-text">{snapshotErrors.requests}</p> : null}
               <div className="social-list">
                 {incomingRequests.map((request) => (
                   <article key={request.id} className="social-list-item">
@@ -4451,7 +4574,7 @@ function SocialPage() {
                       </span>
                       <div className="social-item-copy">
                         <p className="social-item-title">{displayNameForUser(request.sender)}</p>
-                        <p className="social-item-subtitle">{usernameForUser(request.sender)}</p>
+                        <p className="social-item-subtitle">{identityLineForUser(request.sender)}</p>
                       </div>
                     </div>
                     <div className="social-item-actions">
@@ -4481,13 +4604,17 @@ function SocialPage() {
                         }
                         disabled={actionLoadingKey === `incoming-decline-${request.id}`}
                       >
-                        Decline
+                        Reject
                       </button>
                     </div>
                   </article>
                 ))}
-                {incomingRequests.length === 0 ? (
-                  <p className="subtle-text">No incoming requests yet.</p>
+                {!snapshotErrors.requests && incomingRequests.length === 0 ? (
+                  <SocialSectionState
+                    badge="Inbox Clear"
+                    title="No incoming requests yet"
+                    description="New friend invites will show up here the moment someone reaches out."
+                  />
                 ) : null}
               </div>
             </section>
@@ -4497,6 +4624,7 @@ function SocialPage() {
                 <h2>Outgoing Requests</h2>
                 <span>{outgoingRequests.length}</span>
               </div>
+              {snapshotErrors.requests ? <p className="error-text">{snapshotErrors.requests}</p> : null}
               <div className="social-list">
                 {outgoingRequests.map((request) => (
                   <article key={request.id} className="social-list-item">
@@ -4506,7 +4634,7 @@ function SocialPage() {
                       </span>
                       <div className="social-item-copy">
                         <p className="social-item-title">{displayNameForUser(request.receiver)}</p>
-                        <p className="social-item-subtitle">{usernameForUser(request.receiver)}</p>
+                        <p className="social-item-subtitle">{identityLineForUser(request.receiver)}</p>
                       </div>
                     </div>
                     <div className="social-item-actions">
@@ -4522,13 +4650,17 @@ function SocialPage() {
                         }
                         disabled={actionLoadingKey === `outgoing-cancel-${request.id}`}
                       >
-                        Cancel
+                        Cancel Request
                       </button>
                     </div>
                   </article>
                 ))}
-                {outgoingRequests.length === 0 ? (
-                  <p className="subtle-text">No outgoing requests right now.</p>
+                {!snapshotErrors.requests && outgoingRequests.length === 0 ? (
+                  <SocialSectionState
+                    badge="Pending"
+                    title="No outgoing requests"
+                    description="When you invite someone, the pending request will stay here until they respond."
+                  />
                 ) : null}
               </div>
             </section>
@@ -4538,6 +4670,7 @@ function SocialPage() {
                 <h2>Friends</h2>
                 <span>{friends.length}</span>
               </div>
+              {snapshotErrors.friends ? <p className="error-text">{snapshotErrors.friends}</p> : null}
               <div className="social-list">
                 {friends.map((friendship) => (
                   <article key={friendship.id} className="social-list-item">
@@ -4548,7 +4681,7 @@ function SocialPage() {
                       <div className="social-item-copy">
                         <p className="social-item-title">{displayNameForUser(friendship.friend)}</p>
                         <p className="social-item-subtitle">
-                          Friends since {formatShortDate(friendship.created_at)}
+                          {identityLineForUser(friendship.friend)} · Friends since {formatShortDate(friendship.created_at)}
                         </p>
                       </div>
                     </div>
@@ -4559,7 +4692,7 @@ function SocialPage() {
                         onClick={() => handleStartConversation(friendship.friend?.id)}
                         disabled={!friendship.friend?.id || actionLoadingKey === `start-chat-${friendship.friend.id}`}
                       >
-                        DM
+                        Message
                       </button>
                       <button
                         type="button"
@@ -4578,8 +4711,12 @@ function SocialPage() {
                     </div>
                   </article>
                 ))}
-                {friends.length === 0 ? (
-                  <p className="subtle-text">No friends yet. Invite someone from search.</p>
+                {!snapshotErrors.friends && friends.length === 0 ? (
+                  <SocialSectionState
+                    badge="Friends"
+                    title="No friends yet"
+                    description="Start with player search, send an invite, and your friend list will turn into your Social Arena roster."
+                  />
                 ) : null}
               </div>
             </section>
@@ -4589,6 +4726,7 @@ function SocialPage() {
                 <h2>Conversations</h2>
                 {isRefreshingConversations ? <span>Syncing...</span> : <span>{conversations.length}</span>}
               </div>
+              {snapshotErrors.conversations ? <p className="error-text">{snapshotErrors.conversations}</p> : null}
               <div className="social-list social-conversation-list">
                 {conversations.map((conversation) => {
                   const peerPresence = conversation?.peer?.id
@@ -4632,7 +4770,7 @@ function SocialPage() {
                               {displayNameForUser(conversation.peer)}
                             </p>
                             <p className="social-item-subtitle">
-                              {usernameForUser(conversation.peer)}
+                              {identityLineForUser(conversation.peer)}
                             </p>
                           </div>
                           <p
@@ -4660,8 +4798,12 @@ function SocialPage() {
                     </button>
                   );
                 })}
-                {conversations.length === 0 ? (
-                  <p className="subtle-text">No conversations yet. Start by messaging a friend.</p>
+                {!snapshotErrors.conversations && conversations.length === 0 ? (
+                  <SocialSectionState
+                    badge="DMs"
+                    title="No conversations yet"
+                    description="Once you message a friend, their latest thread will appear here with unread counts and live activity."
+                  />
                 ) : null}
               </div>
             </section>
@@ -4686,7 +4828,7 @@ function SocialPage() {
                     </span>
                     <div className="social-chat-peer-copy">
                       <div className="social-chat-peer-top">
-                        <h2>{activePeer?.display_name ?? "Conversation"}</h2>
+                        <h2>{displayNameForUser(activePeer, "Conversation")}</h2>
                         <span
                           className={`social-inline-badge ${
                             activeConversation.can_message ? "is-friend" : "is-muted"
@@ -4700,7 +4842,7 @@ function SocialPage() {
                           activeConversationActivity ? "is-active" : ""
                         }`}
                       >
-                        @{activePeer?.username} | {activePeerStatusLabel}
+                        {identityLineForUser(activePeer)} | {activePeerStatusLabel}
                         {activeConversationActivity ? (
                           <span className="social-typing-dots" aria-hidden="true">
                             <span />
@@ -4758,10 +4900,14 @@ function SocialPage() {
                 </header>
 
                 <div className="social-chat-messages" ref={messageListRef}>
-                  {messagesLoading ? <p className="subtle-text">Loading messages...</p> : null}
+                  {messagesLoading ? <SocialSectionSkeleton rows={4} /> : null}
                   {messagesError ? <p className="error-text">{messagesError}</p> : null}
                   {!messagesLoading && timelineItems.length === 0 ? (
-                    <p className="subtle-text">No messages yet. Start the conversation.</p>
+                    <SocialSectionState
+                      badge="New Thread"
+                      title="No messages yet"
+                      description="Break the ice with a message, voice note, or challenge to get this conversation moving."
+                    />
                   ) : null}
 
                   {timelineItems.map((item) => {
@@ -4789,8 +4935,8 @@ function SocialPage() {
                             </span>
                           </header>
                           <p className="social-item-subtitle">
-                            {challenge.challenger.display_name} challenged{" "}
-                            {challenge.challenged.display_name}
+                            {displayNameForUser(challenge.challenger)} challenged{" "}
+                            {displayNameForUser(challenge.challenged)}
                           </p>
                           <div className="social-challenge-meta">
                             {challenge.category ? <span>{challenge.category}</span> : null}
@@ -5089,8 +5235,8 @@ function SocialPage() {
                     />
                   </span>
                   <div>
-                    <p className="social-item-title">{activePeer.display_name}</p>
-                    <p className="social-item-subtitle">@{activePeer.username}</p>
+                    <p className="social-item-title">{displayNameForUser(activePeer)}</p>
+                    <p className="social-item-subtitle">{identityLineForUser(activePeer)}</p>
                     <p
                       className={`social-side-presence ${
                         activeConversationActivity ? "is-active" : ""

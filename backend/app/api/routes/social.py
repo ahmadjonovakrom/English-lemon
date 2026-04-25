@@ -376,7 +376,12 @@ def direct_key_for_users(first_id: int, second_id: int) -> str:
 
 
 def to_social_user(user: User) -> SocialUserPublic:
-    return SocialUserPublic(id=user.id, username=user.username, display_name=user.username)
+    return SocialUserPublic(
+        id=user.id,
+        username=user.username,
+        display_name=user.username,
+        email=user.email,
+    )
 
 
 def parse_metadata(metadata_json: str | None) -> dict | None:
@@ -1640,14 +1645,17 @@ def list_friend_requests(
             }
         )
 
-    def serialize_request(request: FriendRequest) -> FriendRequestPublic:
+    def serialize_request(request: FriendRequest) -> FriendRequestPublic | None:
         sender = users_by_id.get(request.sender_id)
         receiver = users_by_id.get(request.receiver_id)
         if not sender or not receiver:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="A user related to this request was not found.",
+            logger.warning(
+                "Skipping friend request %s because a related user is missing (sender=%s receiver=%s)",
+                request.id,
+                request.sender_id,
+                request.receiver_id,
             )
+            return None
         return FriendRequestPublic(
             id=request.id,
             sender=to_social_user(sender),
@@ -1657,9 +1665,16 @@ def list_friend_requests(
             updated_at=request.updated_at,
         )
 
+    incoming_payloads = [
+        payload for payload in (serialize_request(request) for request in incoming) if payload
+    ]
+    outgoing_payloads = [
+        payload for payload in (serialize_request(request) for request in outgoing) if payload
+    ]
+
     return FriendRequestsBundle(
-        incoming=[serialize_request(request) for request in incoming],
-        outgoing=[serialize_request(request) for request in outgoing],
+        incoming=incoming_payloads,
+        outgoing=outgoing_payloads,
     )
 
 

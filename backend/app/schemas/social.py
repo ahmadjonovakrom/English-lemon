@@ -8,6 +8,7 @@ class SocialUserPublic(BaseModel):
     id: int
     username: str
     display_name: str
+    email: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

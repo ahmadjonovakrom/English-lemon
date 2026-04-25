@@ -197,6 +197,19 @@ function formatShortDate(value) {
   }).format(parsed);
 }
 
+function formatDateOnly(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "--";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: parsed.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined
+  }).format(parsed);
+}
+
 function formatDurationLabel(value) {
   if (!Number.isFinite(value)) {
     return "0:00";

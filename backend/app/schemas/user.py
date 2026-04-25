@@ -12,5 +12,8 @@ class UserCreate(UserBase):
 
 class UserPublic(UserBase):
     id: int
+    display_name: str | None = None
+    bio: str | None = None
+    avatar_url: str | None = None
 
     model_config = ConfigDict(from_attributes=True)

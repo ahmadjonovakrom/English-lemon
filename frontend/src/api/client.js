@@ -215,6 +215,9 @@ const api = {
   put(path, body, options) {
     return request("PUT", path, { ...options, body });
   },
+  patch(path, body, options) {
+    return request("PATCH", path, { ...options, body });
+  },
   delete(path, options) {
     return request("DELETE", path, options);
   }

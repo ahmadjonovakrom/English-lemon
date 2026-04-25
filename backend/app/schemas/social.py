@@ -100,7 +100,12 @@ class MessagePublic(BaseModel):
 
 
 class ChallengeCreateRequest(BaseModel):
-    title: str = Field(default="Quick Quiz Challenge", min_length=3, max_length=140)
+    opponent_id: int | None = Field(default=None, gt=0)
+    conversation_id: int | None = Field(default=None, gt=0)
+    title: str | None = Field(default=None, min_length=3, max_length=140)
+    challenge_type: Literal[
+        "quick_quiz", "vocabulary", "grammar", "mixed"
+    ] = "quick_quiz"
     category: str | None = Field(default=None, max_length=60)
     difficulty: str | None = Field(default=None, max_length=30)
     expires_in_minutes: int | None = Field(default=1440, ge=5, le=10080)
@@ -112,19 +117,53 @@ class ChallengePublic(BaseModel):
     challenger: SocialUserPublic
     challenged: SocialUserPublic
     title: str
+    challenge_type: str
     status: str
     category: str | None = None
     difficulty: str | None = None
+    challenger_score: int | None = None
+    challenged_score: int | None = None
+    winner_id: int | None = None
+    started_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     responded_at: datetime | None = None
     expires_at: datetime | None = None
+    completed_at: datetime | None = None
     result_summary: str | None = None
+    metadata: dict[str, Any] | None = None
     is_expired: bool
     can_accept: bool
     can_decline: bool
     can_cancel: bool
+    can_start: bool = False
+    can_submit: bool = False
+    can_view_result: bool = False
+    can_rematch: bool = False
     is_actionable_by_current: bool
+    awaiting_opponent_result: bool = False
+
+
+class ChallengeStartResponse(BaseModel):
+    challenge: ChallengePublic
+    question_count: int
+    total_time_seconds: int
+    per_question_time_seconds: int | None = None
+
+
+class ChallengeSubmitRequest(BaseModel):
+    score: int = Field(ge=0)
+    correct_answers: int = Field(ge=0)
+    total_questions: int = Field(gt=0)
+    accuracy: int = Field(ge=0, le=100)
+    lemons_earned: int | None = Field(default=None, ge=0)
+    xp_gained: int | None = Field(default=None, ge=0)
+
+
+class ChallengeSubmitResponse(BaseModel):
+    challenge: ChallengePublic
+    submitted: bool
+    waiting_for_opponent: bool
 
 
 class SessionDescriptionPayload(BaseModel):

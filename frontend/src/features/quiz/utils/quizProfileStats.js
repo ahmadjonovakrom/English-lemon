@@ -2,6 +2,8 @@ const QUIZ_PROFILE_STATS_STORAGE_KEY = "english_lemon_quiz_profile_stats";
 
 const DEFAULT_QUIZ_PROFILE_STATS = {
   quizzesPlayed: 0,
+  quizzesWon: 0,
+  totalPoints: 0,
   totalLemons: 0,
   totalCorrectAnswers: 0,
   totalQuestionsAnswered: 0,
@@ -77,6 +79,8 @@ export function readQuizProfileStats() {
 
     return {
       quizzesPlayed: Math.max(0, Math.floor(toSafeNumber(parsed?.quizzesPlayed))),
+      quizzesWon: Math.max(0, Math.floor(toSafeNumber(parsed?.quizzesWon))),
+      totalPoints: Math.max(0, Math.floor(toSafeNumber(parsed?.totalPoints))),
       totalLemons: Math.max(0, Math.floor(toSafeNumber(parsed?.totalLemons))),
       totalCorrectAnswers: Math.max(0, Math.floor(toSafeNumber(parsed?.totalCorrectAnswers))),
       totalQuestionsAnswered: Math.max(0, Math.floor(toSafeNumber(parsed?.totalQuestionsAnswered))),
@@ -100,7 +104,8 @@ export function recordQuizRoundProgress({
   totalCorrect,
   totalQuestions,
   currentStreak,
-  bestStreak
+  bestStreak,
+  didWin = false
 }) {
   if (typeof window === "undefined") {
     return getDefaultQuizProfileStats();
@@ -131,6 +136,11 @@ export function recordQuizRoundProgress({
 
   const nextStats = {
     quizzesPlayed: current.quizzesPlayed + 1,
+    quizzesWon: current.quizzesWon + (didWin ? 1 : 0),
+    totalPoints:
+      current.totalPoints +
+      safeTotalCorrect * 10 +
+      Math.max(0, Math.floor(toSafeNumber(lemonsEarned))),
     totalLemons: current.totalLemons + Math.max(0, Math.floor(toSafeNumber(lemonsEarned))),
     totalCorrectAnswers: current.totalCorrectAnswers + safeTotalCorrect,
     totalQuestionsAnswered: current.totalQuestionsAnswered + safeTotalQuestions,
@@ -148,4 +158,39 @@ export function recordQuizRoundProgress({
   }
 
   return nextStats;
+}
+
+export function buildStatsSyncPayload(stats) {
+  const safeStats = stats && typeof stats === "object" ? stats : getDefaultQuizProfileStats();
+  const recentActivity = Array.isArray(safeStats.recentRounds)
+    ? safeStats.recentRounds.map((round) => ({
+        type: "quiz_result",
+        title: `${round.category} quiz completed`,
+        subtitle: `${round.totalCorrect}/${round.totalQuestions} correct · ${round.accuracy}% accuracy · +${round.lemonsEarned} lemons`,
+        created_at: round.playedAt,
+        metadata: {
+          category: round.category,
+          lemonsEarned: round.lemonsEarned,
+          accuracy: round.accuracy,
+          totalCorrect: round.totalCorrect,
+          totalQuestions: round.totalQuestions
+        }
+      }))
+    : [];
+
+  return {
+    quizzes_played: Math.max(0, Math.floor(toSafeNumber(safeStats.quizzesPlayed))),
+    quizzes_won: Math.max(0, Math.floor(toSafeNumber(safeStats.quizzesWon))),
+    total_points: Math.max(0, Math.floor(toSafeNumber(safeStats.totalPoints))),
+    total_lemons: Math.max(0, Math.floor(toSafeNumber(safeStats.totalLemons))),
+    total_correct_answers: Math.max(0, Math.floor(toSafeNumber(safeStats.totalCorrectAnswers))),
+    total_questions_answered: Math.max(
+      0,
+      Math.floor(toSafeNumber(safeStats.totalQuestionsAnswered))
+    ),
+    current_streak: Math.max(0, Math.floor(toSafeNumber(safeStats.currentStreak))),
+    best_streak: Math.max(0, Math.floor(toSafeNumber(safeStats.bestStreak))),
+    category_counts: toSafeCategoryCounts(safeStats.categoryCounts),
+    recent_activity: recentActivity
+  };
 }

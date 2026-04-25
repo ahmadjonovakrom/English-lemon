@@ -21,6 +21,12 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const refreshUser = async () => {
+    const profile = await api.get("/users/me");
+    setUser(profile);
+    return profile;
+  };
+
   useEffect(() => {
     const token = localStorage.getItem(TOKEN_STORAGE_KEY);
     if (!token) {
@@ -29,7 +35,7 @@ export function AuthProvider({ children }) {
     }
 
     api
-      .get("/auth/me")
+      .get("/users/me")
       .then((response) => {
         setUser(response);
       })
@@ -46,7 +52,7 @@ export function AuthProvider({ children }) {
     try {
       const response = await api.post("/auth/register", payload);
       localStorage.setItem(TOKEN_STORAGE_KEY, response.access_token);
-      setUser(response.user);
+      await refreshUser();
     } catch (error) {
       throw new Error(formatApiError(error, "Unable to register right now."));
     }
@@ -56,7 +62,7 @@ export function AuthProvider({ children }) {
     try {
       const response = await api.post("/auth/login", payload);
       localStorage.setItem(TOKEN_STORAGE_KEY, response.access_token);
-      setUser(response.user);
+      await refreshUser();
     } catch (error) {
       throw new Error(formatApiError(error, "Unable to login right now."));
     }
@@ -73,7 +79,8 @@ export function AuthProvider({ children }) {
       loading,
       register,
       login,
-      logout
+      logout,
+      refreshUser
     }),
     [user, loading]
   );

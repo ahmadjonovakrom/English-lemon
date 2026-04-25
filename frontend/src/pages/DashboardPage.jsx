@@ -11,8 +11,13 @@ function DashboardPage() {
   const { user, logout } = useAuth();
 
   const displayName = useMemo(() => {
-    if (!user?.username) return "Learner";
-    return user.username;
+    if (typeof user?.display_name === "string" && user.display_name.trim()) {
+      return user.display_name.trim();
+    }
+    if (typeof user?.username === "string" && user.username.trim()) {
+      return user.username.trim();
+    }
+    return "Learner";
   }, [user]);
 
   const handleLogout = () => {
@@ -26,7 +31,9 @@ function DashboardPage() {
         <DashboardHeader
           username={displayName}
           onOpenLeaderboard={() => navigate("/leaderboard")}
+          onOpenMultiplayer={() => navigate("/multiplayer")}
           onOpenSocial={() => navigate("/social")}
+          onOpenChallenges={() => navigate("/challenges")}
           onOpenProfile={() => navigate("/profile")}
           onLogout={handleLogout}
         />

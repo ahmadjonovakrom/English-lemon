@@ -2,8 +2,10 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useAuth } from "./context/AuthContext";
 import DashboardPage from "./pages/DashboardPage";
+import ChallengesPage from "./pages/ChallengesPage";
 import LeaderboardPage from "./pages/LeaderboardPage";
 import LoginPage from "./pages/LoginPage";
+import MultiplayerPage from "./pages/MultiplayerPage";
 import ProfilePage from "./pages/ProfilePage";
 import QuizPage from "./pages/QuizPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -46,7 +48,31 @@ function App() {
         }
       />
       <Route
+        path="/multiplayer"
+        element={
+          <ProtectedRoute>
+            <MultiplayerPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/multiplayer/:roomId"
+        element={
+          <ProtectedRoute>
+            <MultiplayerPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/profile"
+        element={
+          <ProtectedRoute>
+            <ProfilePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/users/:userId"
         element={
           <ProtectedRoute>
             <ProfilePage />
@@ -58,6 +84,22 @@ function App() {
         element={
           <ProtectedRoute>
             <LeaderboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/challenges"
+        element={
+          <ProtectedRoute>
+            <ChallengesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/challenges/:challengeId"
+        element={
+          <ProtectedRoute>
+            <ChallengesPage />
           </ProtectedRoute>
         }
       />

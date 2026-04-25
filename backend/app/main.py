@@ -7,10 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.multiplayer import router as multiplayer_router
 from app.api.routes.notifications import router as notifications_router
 from app.api.routes.presence import router as presence_router
 from app.api.routes.signaling import router as signaling_router
 from app.api.routes.social import router as social_router
+from app.api.routes.users import router as users_router
 from app.core.config import settings
 from app.core.database import Base, engine
 from app import models  # noqa: F401
@@ -41,6 +43,7 @@ app.add_middleware(
 def on_startup():
     Base.metadata.create_all(bind=engine)
     ensure_presence_columns()
+    ensure_challenge_columns()
 
 
 def ensure_presence_columns():
@@ -53,6 +56,37 @@ def ensure_presence_columns():
         statements.append("ALTER TABLE users ADD COLUMN in_call BOOLEAN NOT NULL DEFAULT 0")
     if "last_seen" not in columns:
         statements.append("ALTER TABLE users ADD COLUMN last_seen DATETIME")
+    if "display_name" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN display_name VARCHAR(80)")
+    if "bio" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN bio TEXT")
+    if "avatar_url" not in columns:
+        statements.append("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(600)")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def ensure_challenge_columns():
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("challenges")}
+    statements = []
+    if "challenge_type" not in columns:
+        statements.append(
+            "ALTER TABLE challenges ADD COLUMN challenge_type VARCHAR(40) NOT NULL DEFAULT 'quick_quiz'"
+        )
+    if "challenger_score" not in columns:
+        statements.append("ALTER TABLE challenges ADD COLUMN challenger_score INTEGER")
+    if "challenged_score" not in columns:
+        statements.append("ALTER TABLE challenges ADD COLUMN challenged_score INTEGER")
+    if "winner_id" not in columns:
+        statements.append("ALTER TABLE challenges ADD COLUMN winner_id INTEGER")
+    if "started_at" not in columns:
+        statements.append("ALTER TABLE challenges ADD COLUMN started_at DATETIME")
+    if "completed_at" not in columns:
+        statements.append("ALTER TABLE challenges ADD COLUMN completed_at DATETIME")
     if not statements:
         return
     with engine.begin() as connection:
@@ -68,6 +102,8 @@ def health_check():
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
+app.include_router(multiplayer_router, prefix=settings.API_PREFIX)
+app.include_router(users_router, prefix=settings.API_PREFIX)
 app.include_router(social_router, prefix=settings.API_PREFIX)
 app.include_router(signaling_router, prefix=settings.API_PREFIX)
 app.include_router(notifications_router, prefix=settings.API_PREFIX)

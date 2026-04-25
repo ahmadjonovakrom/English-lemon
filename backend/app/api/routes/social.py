@@ -34,6 +34,9 @@ from app.schemas.social import (
     CallPublic,
     ChallengeCreateRequest,
     ChallengePublic,
+    ChallengeStartResponse,
+    ChallengeSubmitRequest,
+    ChallengeSubmitResponse,
     ConversationCreateRequest,
     ConversationListResponse,
     ConversationMessagesResponse,
@@ -94,6 +97,14 @@ CALL_RING_TIMEOUT_SECONDS = 35
 CALL_CONNECTING_TIMEOUT_SECONDS = 90
 CALL_ACTIVE_STATUSES = {"ringing", "connecting", "active"}
 CALL_TERMINAL_STATUSES = {"ended", "declined", "missed", "canceled"}
+CHALLENGE_TYPE_TITLES = {
+    "quick_quiz": "Quick Quiz Challenge",
+    "vocabulary": "Vocabulary Challenge",
+    "grammar": "Grammar Challenge",
+    "mixed": "Mixed Challenge",
+}
+CHALLENGE_QUESTION_COUNT = 10
+CHALLENGE_PER_QUESTION_SECONDS = 18
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -121,6 +132,20 @@ def has_reached(timestamp: datetime | None, reference: datetime | None = None) -
 
 def ordered_pair(first_id: int, second_id: int) -> tuple[int, int]:
     return (first_id, second_id) if first_id < second_id else (second_id, first_id)
+
+
+def normalize_challenge_type(value: str | None) -> str:
+    normalized = (value or "").strip().lower().replace(" ", "_")
+    if normalized in CHALLENGE_TYPE_TITLES:
+        return normalized
+    return "quick_quiz"
+
+
+def challenge_title_for_type(challenge_type: str, custom_title: str | None = None) -> str:
+    normalized_custom = (custom_title or "").strip()
+    if normalized_custom:
+        return normalized_custom
+    return CHALLENGE_TYPE_TITLES.get(challenge_type, CHALLENGE_TYPE_TITLES["quick_quiz"])
 
 
 def sdp_preview(value: str, max_lines: int = 4, max_chars: int = 220) -> str:
@@ -375,6 +400,40 @@ def direct_key_for_users(first_id: int, second_id: int) -> str:
     return f"{low}:{high}"
 
 
+def ensure_direct_conversation_between(db: Session, first_user_id: int, second_user_id: int) -> Conversation:
+    direct_key = direct_key_for_users(first_user_id, second_user_id)
+    conversation = db.scalar(select(Conversation).where(Conversation.direct_key == direct_key))
+    if not conversation:
+        conversation = Conversation(type="direct", direct_key=direct_key)
+        db.add(conversation)
+        db.flush()
+        db.add_all(
+            [
+                ConversationParticipant(conversation_id=conversation.id, user_id=first_user_id),
+                ConversationParticipant(conversation_id=conversation.id, user_id=second_user_id),
+            ]
+        )
+        return conversation
+
+    participant_ids = db.scalars(
+        select(ConversationParticipant.user_id).where(
+            ConversationParticipant.conversation_id == conversation.id
+        )
+    ).all()
+    missing_participants = []
+    if first_user_id not in participant_ids:
+        missing_participants.append(
+            ConversationParticipant(conversation_id=conversation.id, user_id=first_user_id)
+        )
+    if second_user_id not in participant_ids:
+        missing_participants.append(
+            ConversationParticipant(conversation_id=conversation.id, user_id=second_user_id)
+        )
+    if missing_participants:
+        db.add_all(missing_participants)
+    return conversation
+
+
 def to_social_user(user: User) -> SocialUserPublic:
     return SocialUserPublic(
         id=user.id,
@@ -394,6 +453,17 @@ def parse_metadata(metadata_json: str | None) -> dict | None:
         return {"value": parsed}
     except json.JSONDecodeError:
         return None
+
+
+def parse_challenge_metadata(challenge: Challenge) -> dict:
+    metadata = parse_metadata(challenge.metadata_json)
+    if isinstance(metadata, dict):
+        return metadata
+    return {}
+
+
+def save_challenge_metadata(challenge: Challenge, metadata: dict) -> None:
+    challenge.metadata_json = json.dumps(metadata, separators=(",", ":")) if metadata else None
 
 
 def parse_json_array(payload: str | None) -> list[dict]:
@@ -1081,10 +1151,32 @@ def to_challenge_public(
         challenge.status == "pending" and has_reached(challenge.expires_at, now)
     )
     is_pending_actionable = challenge.status == "pending" and not is_expired
+    metadata = parse_challenge_metadata(challenge)
+    challenger_result = metadata.get("challenger_result") if isinstance(metadata.get("challenger_result"), dict) else None
+    challenged_result = metadata.get("challenged_result") if isinstance(metadata.get("challenged_result"), dict) else None
 
     can_accept = is_pending_actionable and current_user.id == challenge.challenged_id
     can_decline = is_pending_actionable and current_user.id == challenge.challenged_id
     can_cancel = is_pending_actionable and current_user.id == challenge.challenger_id
+    can_start = challenge.status == "accepted" and current_user.id in {
+        challenge.challenger_id,
+        challenge.challenged_id,
+    }
+    can_submit = can_start and (
+        (current_user.id == challenge.challenger_id and challenger_result is None)
+        or (current_user.id == challenge.challenged_id and challenged_result is None)
+    )
+    can_view_result = challenge.status == "completed" or (
+        challenge.status == "accepted" and (challenger_result is not None or challenged_result is not None)
+    )
+    can_rematch = challenge.status in {"completed", "declined", "expired", "canceled"} and current_user.id in {
+        challenge.challenger_id,
+        challenge.challenged_id,
+    }
+    awaiting_opponent_result = challenge.status == "accepted" and (
+        (current_user.id == challenge.challenger_id and challenger_result is not None and challenged_result is None)
+        or (current_user.id == challenge.challenged_id and challenged_result is not None and challenger_result is None)
+    )
 
     return ChallengePublic(
         id=challenge.id,
@@ -1092,19 +1184,31 @@ def to_challenge_public(
         challenger=to_social_user(challenger),
         challenged=to_social_user(challenged),
         title=challenge.title,
+        challenge_type=normalize_challenge_type(challenge.challenge_type),
         status=challenge.status if not is_expired else "expired",
         category=challenge.category,
         difficulty=challenge.difficulty,
+        challenger_score=challenge.challenger_score,
+        challenged_score=challenge.challenged_score,
+        winner_id=challenge.winner_id,
+        started_at=challenge.started_at,
         created_at=challenge.created_at,
         updated_at=challenge.updated_at,
         responded_at=challenge.responded_at,
         expires_at=challenge.expires_at,
+        completed_at=challenge.completed_at,
         result_summary=challenge.result_summary,
+        metadata=metadata or None,
         is_expired=is_expired,
         can_accept=can_accept,
         can_decline=can_decline,
         can_cancel=can_cancel,
-        is_actionable_by_current=can_accept or can_decline or can_cancel,
+        can_start=can_start,
+        can_submit=can_submit,
+        can_view_result=can_view_result,
+        can_rematch=can_rematch,
+        is_actionable_by_current=can_accept or can_decline or can_cancel or can_start or can_submit or can_rematch,
+        awaiting_opponent_result=awaiting_opponent_result,
     )
 
 
@@ -1939,44 +2043,14 @@ def create_or_get_direct_conversation(
             detail="You can only start conversations with friends.",
         )
 
-    direct_key = direct_key_for_users(current_user.id, friend_id)
-    conversation = db.scalar(select(Conversation).where(Conversation.direct_key == direct_key))
-    if not conversation:
-        conversation = Conversation(type="direct", direct_key=direct_key)
-        db.add(conversation)
-        db.flush()
-        db.add_all(
-            [
-                ConversationParticipant(
-                    conversation_id=conversation.id, user_id=current_user.id
-                ),
-                ConversationParticipant(conversation_id=conversation.id, user_id=friend_id),
-            ]
-        )
+    conversation = ensure_direct_conversation_between(db, current_user.id, friend_id)
+    if conversation.id is None:
         db.commit()
         deliver_session_notifications(db)
         db.refresh(conversation)
     else:
-        participant_ids = db.scalars(
-            select(ConversationParticipant.user_id).where(
-                ConversationParticipant.conversation_id == conversation.id
-            )
-        ).all()
-        missing_participants = []
-        if current_user.id not in participant_ids:
-            missing_participants.append(
-                ConversationParticipant(
-                    conversation_id=conversation.id, user_id=current_user.id
-                )
-            )
-        if friend_id not in participant_ids:
-            missing_participants.append(
-                ConversationParticipant(conversation_id=conversation.id, user_id=friend_id)
-            )
-        if missing_participants:
-            db.add_all(missing_participants)
-            db.commit()
-            deliver_session_notifications(db)
+        db.commit()
+        deliver_session_notifications(db)
 
     payloads, _ = load_conversation_payloads(db, current_user, [conversation.id])
     if not payloads:
@@ -2263,17 +2337,14 @@ def send_voice_message(
         audio.file.close()
 
 
-@router.post(
-    "/conversations/{conversation_id}/challenges",
-    response_model=ChallengePublic,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_challenge(
+def create_challenge_record(
+    *,
+    db: Session,
     conversation_id: int,
+    challenged_id: int,
     payload: ChallengeCreateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+    current_user: User,
+) -> ChallengePublic:
     conversation = assert_conversation_participant(db, conversation_id, current_user.id)
     if conversation.type != "direct":
         raise HTTPException(
@@ -2320,7 +2391,8 @@ def create_challenge(
             detail="A pending challenge already exists in this conversation.",
         )
 
-    title = payload.title.strip() or "Quick Quiz Challenge"
+    challenge_type = normalize_challenge_type(payload.challenge_type)
+    title = challenge_title_for_type(challenge_type, payload.title)
     category = payload.category.strip() if payload.category else None
     difficulty = payload.difficulty.strip() if payload.difficulty else None
     expires_at = (
@@ -2334,6 +2406,7 @@ def create_challenge(
         challenger_id=current_user.id,
         challenged_id=challenged_id,
         title=title,
+        challenge_type=challenge_type,
         status="pending",
         category=category,
         difficulty=difficulty,
@@ -2354,7 +2427,11 @@ def create_challenge(
             related_user_id=current_user.id,
             related_conversation_id=conversation_id,
             related_challenge_id=challenge.id,
-            metadata={"category": category, "difficulty": difficulty},
+            metadata={
+                "category": category,
+                "difficulty": difficulty,
+                "challenge_type": challenge_type,
+            },
         )
 
     db.commit()
@@ -2364,6 +2441,71 @@ def create_challenge(
 
     users_by_id = get_users_map(db, {current_user.id, challenged_id})
     return to_challenge_public(challenge, current_user, users_by_id)
+
+
+@router.post("/challenges", response_model=ChallengePublic, status_code=status.HTTP_201_CREATED)
+def create_direct_challenge(
+    payload: ChallengeCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opponent_id = payload.opponent_id
+    if opponent_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="opponent_id is required.",
+        )
+    if opponent_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot challenge yourself.",
+        )
+
+    opponent = db.get(User, opponent_id)
+    if not opponent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    if not get_friendship_between(db, current_user.id, opponent_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only challenge friends.",
+        )
+
+    conversation = ensure_direct_conversation_between(db, current_user.id, opponent_id)
+    db.commit()
+    deliver_session_notifications(db)
+    db.refresh(conversation)
+    return create_challenge_record(
+        db=db,
+        conversation_id=conversation.id,
+        challenged_id=opponent_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/challenges",
+    response_model=ChallengePublic,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_challenge(
+    conversation_id: int,
+    payload: ChallengeCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    challenged_id = get_direct_peer_id(db, conversation_id, current_user.id)
+    return create_challenge_record(
+        db=db,
+        conversation_id=conversation_id,
+        challenged_id=challenged_id,
+        payload=payload,
+        current_user=current_user,
+    )
 
 
 @router.get(
@@ -2398,6 +2540,93 @@ def list_conversation_challenges(
         to_challenge_public(challenge, current_user, users_by_id)
         for challenge in challenge_rows
     ]
+
+
+def serialize_challenge_rows(
+    db: Session, current_user: User, challenge_rows: list[Challenge]
+) -> list[ChallengePublic]:
+    if not challenge_rows:
+        return []
+    user_ids = {current_user.id}
+    user_ids.update({challenge.challenger_id for challenge in challenge_rows})
+    user_ids.update({challenge.challenged_id for challenge in challenge_rows})
+    users_by_id = get_users_map(db, user_ids)
+    return [
+        to_challenge_public(challenge, current_user, users_by_id)
+        for challenge in challenge_rows
+    ]
+
+
+@router.get("/challenges", response_model=list[ChallengePublic])
+def list_my_challenges(
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=60, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    expire_pending_challenges(db)
+    query = select(Challenge).where(
+        or_(
+            Challenge.challenger_id == current_user.id,
+            Challenge.challenged_id == current_user.id,
+        )
+    )
+    if status_filter == "incoming":
+        query = query.where(Challenge.challenged_id == current_user.id)
+    elif status_filter == "outgoing":
+        query = query.where(Challenge.challenger_id == current_user.id)
+    elif status_filter == "completed":
+        query = query.where(Challenge.status == "completed")
+    elif status_filter:
+        query = query.where(Challenge.status == status_filter)
+
+    challenge_rows = db.scalars(
+        query.order_by(Challenge.updated_at.desc(), Challenge.id.desc()).limit(limit)
+    ).all()
+    return serialize_challenge_rows(db, current_user, challenge_rows)
+
+
+@router.get("/challenges/incoming", response_model=list[ChallengePublic])
+def list_incoming_challenges(
+    limit: int = Query(default=60, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    expire_pending_challenges(db)
+    challenge_rows = db.scalars(
+        select(Challenge)
+        .where(Challenge.challenged_id == current_user.id)
+        .order_by(Challenge.updated_at.desc(), Challenge.id.desc())
+        .limit(limit)
+    ).all()
+    return serialize_challenge_rows(db, current_user, challenge_rows)
+
+
+@router.get("/challenges/outgoing", response_model=list[ChallengePublic])
+def list_outgoing_challenges(
+    limit: int = Query(default=60, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    expire_pending_challenges(db)
+    challenge_rows = db.scalars(
+        select(Challenge)
+        .where(Challenge.challenger_id == current_user.id)
+        .order_by(Challenge.updated_at.desc(), Challenge.id.desc())
+        .limit(limit)
+    ).all()
+    return serialize_challenge_rows(db, current_user, challenge_rows)
+
+
+@router.get("/challenges/{challenge_id}", response_model=ChallengePublic)
+def get_challenge(
+    challenge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    challenge = get_challenge_for_actor(db, challenge_id, current_user)
+    users_by_id = get_users_map(db, {challenge.challenger_id, challenge.challenged_id})
+    return to_challenge_public(challenge, current_user, users_by_id)
 
 
 def _resolve_challenge_with_transition_guard(
@@ -2441,6 +2670,7 @@ def _resolve_challenge_with_transition_guard(
         )
 
 
+@router.patch("/challenges/{challenge_id}/accept", response_model=ChallengePublic)
 @router.post("/challenges/{challenge_id}/accept", response_model=ChallengePublic)
 def accept_challenge(
     challenge_id: int,
@@ -2487,6 +2717,7 @@ def accept_challenge(
     return to_challenge_public(challenge, current_user, users_by_id)
 
 
+@router.patch("/challenges/{challenge_id}/decline", response_model=ChallengePublic)
 @router.post("/challenges/{challenge_id}/decline", response_model=ChallengePublic)
 def decline_challenge(
     challenge_id: int,
@@ -2565,6 +2796,238 @@ def cancel_challenge(
 
     users_by_id = get_users_map(db, {challenge.challenger_id, challenge.challenged_id})
     return to_challenge_public(challenge, current_user, users_by_id)
+
+
+def challenge_timing_payload(challenge: Challenge) -> tuple[int, int, int]:
+    question_count = CHALLENGE_QUESTION_COUNT
+    per_question_seconds = CHALLENGE_PER_QUESTION_SECONDS
+    total_time_seconds = question_count * per_question_seconds
+    return question_count, per_question_seconds, total_time_seconds
+
+
+@router.post("/challenges/{challenge_id}/start", response_model=ChallengeStartResponse)
+def start_challenge(
+    challenge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    challenge = get_challenge_for_actor(db, challenge_id, current_user)
+    if challenge.status == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Accept the challenge before starting.",
+        )
+    if challenge.status not in {"accepted", "completed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Challenge cannot be started while {challenge.status}.",
+        )
+
+    metadata = parse_challenge_metadata(challenge)
+    question_count, per_question_seconds, total_time_seconds = challenge_timing_payload(challenge)
+    gameplay = metadata.get("gameplay") if isinstance(metadata.get("gameplay"), dict) else {}
+    gameplay.update(
+        {
+            "question_count": question_count,
+            "per_question_time_seconds": per_question_seconds,
+            "total_time_seconds": total_time_seconds,
+            "challenge_type": normalize_challenge_type(challenge.challenge_type),
+            "category": challenge.category,
+            "difficulty": challenge.difficulty,
+        }
+    )
+    metadata["gameplay"] = gameplay
+
+    if challenge.started_at is None:
+        challenge.started_at = now_utc()
+    challenge.updated_at = now_utc()
+    conversation = db.get(Conversation, challenge.conversation_id)
+    if conversation:
+        conversation.updated_at = challenge.updated_at
+    save_challenge_metadata(challenge, metadata)
+    db.commit()
+    db.refresh(challenge)
+    users_by_id = get_users_map(db, {challenge.challenger_id, challenge.challenged_id})
+    return ChallengeStartResponse(
+        challenge=to_challenge_public(challenge, current_user, users_by_id),
+        question_count=question_count,
+        total_time_seconds=total_time_seconds,
+        per_question_time_seconds=per_question_seconds,
+    )
+
+
+def build_challenge_result_summary(
+    challenge: Challenge,
+    *,
+    challenger_user: User | None,
+    challenged_user: User | None,
+) -> str:
+    if challenge.challenger_score is None or challenge.challenged_score is None:
+        waiting_user = challenged_user if challenge.challenger_score is not None else challenger_user
+        waiting_name = waiting_user.username if waiting_user else "your opponent"
+        return f"Waiting for {waiting_name} to finish."
+    if challenge.winner_id == challenge.challenger_id and challenger_user:
+        return (
+            f"{challenger_user.username} won {challenge.challenger_score}-{challenge.challenged_score}."
+        )
+    if challenge.winner_id == challenge.challenged_id and challenged_user:
+        return (
+            f"{challenged_user.username} won {challenge.challenged_score}-{challenge.challenger_score}."
+        )
+    return f"Draw at {challenge.challenger_score}-{challenge.challenged_score}."
+
+
+@router.post("/challenges/{challenge_id}/submit", response_model=ChallengeSubmitResponse)
+def submit_challenge_result(
+    challenge_id: int,
+    payload: ChallengeSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    challenge = get_challenge_for_actor(db, challenge_id, current_user)
+    if challenge.status == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Accept the challenge before submitting results.",
+        )
+    if challenge.status not in {"accepted", "completed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Challenge cannot be submitted while {challenge.status}.",
+        )
+
+    metadata = parse_challenge_metadata(challenge)
+    role_key = "challenger" if current_user.id == challenge.challenger_id else "challenged"
+    result_key = f"{role_key}_result"
+    if isinstance(metadata.get(result_key), dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You have already submitted this challenge.",
+        )
+
+    submitted_at = now_utc()
+    metadata[result_key] = {
+        "user_id": current_user.id,
+        "score": payload.score,
+        "correct_answers": payload.correct_answers,
+        "total_questions": payload.total_questions,
+        "accuracy": payload.accuracy,
+        "lemons_earned": payload.lemons_earned,
+        "xp_gained": payload.xp_gained,
+        "submitted_at": submitted_at.isoformat(),
+    }
+
+    if challenge.started_at is None:
+        challenge.started_at = submitted_at
+
+    if current_user.id == challenge.challenger_id:
+        challenge.challenger_score = payload.score
+    else:
+        challenge.challenged_score = payload.score
+
+    challenger_user = db.get(User, challenge.challenger_id)
+    challenged_user = db.get(User, challenge.challenged_id)
+    challenger_result = metadata.get("challenger_result") if isinstance(metadata.get("challenger_result"), dict) else None
+    challenged_result = metadata.get("challenged_result") if isinstance(metadata.get("challenged_result"), dict) else None
+
+    if challenger_result and challenged_result:
+        challenge.status = "completed"
+        challenge.completed_at = submitted_at
+        challenge.responded_at = challenge.responded_at or submitted_at
+        challenger_accuracy = int(challenger_result.get("accuracy") or 0)
+        challenged_accuracy = int(challenged_result.get("accuracy") or 0)
+        if (challenge.challenger_score or 0) > (challenge.challenged_score or 0):
+            challenge.winner_id = challenge.challenger_id
+        elif (challenge.challenged_score or 0) > (challenge.challenger_score or 0):
+            challenge.winner_id = challenge.challenged_id
+        elif challenger_accuracy > challenged_accuracy:
+            challenge.winner_id = challenge.challenger_id
+        elif challenged_accuracy > challenger_accuracy:
+            challenge.winner_id = challenge.challenged_id
+        else:
+            challenge.winner_id = None
+
+        create_notification(
+            db,
+            user_id=challenge.challenger_id,
+            notification_type="challenge_result",
+            title="Challenge completed",
+            body=challenge.title,
+            related_user_id=challenge.challenged_id,
+            related_conversation_id=challenge.conversation_id,
+            related_challenge_id=challenge.id,
+        )
+        create_notification(
+            db,
+            user_id=challenge.challenged_id,
+            notification_type="challenge_result",
+            title="Challenge completed",
+            body=challenge.title,
+            related_user_id=challenge.challenger_id,
+            related_conversation_id=challenge.conversation_id,
+            related_challenge_id=challenge.id,
+        )
+    else:
+        challenge.status = "accepted"
+
+    challenge.updated_at = submitted_at
+    challenge.result_summary = build_challenge_result_summary(
+        challenge,
+        challenger_user=challenger_user,
+        challenged_user=challenged_user,
+    )
+    save_challenge_metadata(challenge, metadata)
+
+    conversation = db.get(Conversation, challenge.conversation_id)
+    if conversation:
+        conversation.updated_at = submitted_at
+
+    db.commit()
+    deliver_session_notifications(db)
+    db.refresh(challenge)
+    users_by_id = get_users_map(db, {challenge.challenger_id, challenge.challenged_id})
+    serialized = to_challenge_public(challenge, current_user, users_by_id)
+    return ChallengeSubmitResponse(
+        challenge=serialized,
+        submitted=True,
+        waiting_for_opponent=serialized.awaiting_opponent_result,
+    )
+
+
+@router.post("/challenges/{challenge_id}/rematch", response_model=ChallengePublic, status_code=status.HTTP_201_CREATED)
+def rematch_challenge(
+    challenge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    original = get_challenge_for_actor(db, challenge_id, current_user)
+    if original.status not in {"completed", "declined", "expired", "canceled"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Rematch is available after a resolved challenge.",
+        )
+
+    opponent_id = original.challenged_id if current_user.id == original.challenger_id else original.challenger_id
+    if not get_friendship_between(db, current_user.id, opponent_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You can only rematch friends.",
+        )
+
+    rematch_payload = ChallengeCreateRequest(
+        title=f"Rematch · {challenge_title_for_type(normalize_challenge_type(original.challenge_type))}",
+        challenge_type=normalize_challenge_type(original.challenge_type),
+        category=original.category,
+        difficulty=original.difficulty,
+        expires_in_minutes=1440,
+    )
+    return create_challenge_record(
+        db=db,
+        conversation_id=original.conversation_id,
+        challenged_id=opponent_id,
+        payload=rematch_payload,
+        current_user=current_user,
+    )
 
 
 def _serialize_call_for_current(db: Session, call: CallSession, current_user: User) -> CallPublic:

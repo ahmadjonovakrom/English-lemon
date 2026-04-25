@@ -1,41 +1,39 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import NotificationBell from "../components/notifications/NotificationBell";
+import {
+  getMyActivity,
+  getMyProfile,
+  getMyStats,
+  getPublicActivity,
+  getPublicProfile,
+  getPublicStats,
+  syncMyStats,
+  updateMyProfile
+} from "../api/profile";
+import {
+  acceptFriendRequest,
+  cancelFriendRequest,
+  createOrGetDirectConversation,
+  declineFriendRequest,
+  sendFriendRequest
+} from "../api/social";
 import { useAuth } from "../context/AuthContext";
-import { readQuizProfileStats } from "../features/quiz/utils/quizProfileStats";
+import {
+  buildStatsSyncPayload,
+  readQuizProfileStats
+} from "../features/quiz/utils/quizProfileStats";
 
-const PROFILE_META_STORAGE_KEY = "english_lemon_profile_meta";
-const PROFILE_IDENTITY_STORAGE_KEY = "english_lemon_profile_identity";
-const LEMONS_PER_LEVEL = 100;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MAX_BIO_LENGTH = 180;
-const MAX_AVATAR_FILE_SIZE = 1024 * 1024;
+const MAX_BIO_LENGTH = 240;
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
-const SEASON_REFERENCE_PLAYERS = [
-  { id: "seed-1", username: "LexiPrime", totalLemons: 1690, quizzesPlayed: 238, accuracy: 92 },
-  { id: "seed-2", username: "WordFalcon", totalLemons: 1455, quizzesPlayed: 211, accuracy: 89 },
-  { id: "seed-3", username: "NorthFluent", totalLemons: 1310, quizzesPlayed: 194, accuracy: 87 },
-  { id: "seed-4", username: "MinaScope", totalLemons: 1195, quizzesPlayed: 173, accuracy: 85 },
-  { id: "seed-5", username: "CrispSyntax", totalLemons: 1110, quizzesPlayed: 161, accuracy: 84 },
-  { id: "seed-6", username: "EchoReader", totalLemons: 995, quizzesPlayed: 149, accuracy: 82 },
-  { id: "seed-7", username: "IvyPronounce", totalLemons: 910, quizzesPlayed: 132, accuracy: 80 },
-  { id: "seed-8", username: "DeltaLingua", totalLemons: 865, quizzesPlayed: 126, accuracy: 79 },
-  { id: "seed-9", username: "NovaIdiom", totalLemons: 790, quizzesPlayed: 113, accuracy: 77 },
-  { id: "seed-10", username: "SlateCollocate", totalLemons: 715, quizzesPlayed: 98, accuracy: 75 },
-  { id: "seed-11", username: "FluentRidge", totalLemons: 680, quizzesPlayed: 92, accuracy: 74 },
-  { id: "seed-12", username: "VerbaSpark", totalLemons: 640, quizzesPlayed: 89, accuracy: 73 }
-];
-
-function toSafeNumber(value, fallback = 0) {
-  return Number.isFinite(value) ? value : fallback;
-}
-
 function formatNumber(value) {
-  return NUMBER_FORMATTER.format(Math.max(0, Math.floor(toSafeNumber(value))));
+  return NUMBER_FORMATTER.format(Math.max(0, Math.floor(Number(value) || 0)));
 }
 
 function formatPercent(value) {
-  return `${Math.max(0, Math.min(100, Math.round(toSafeNumber(value))))}%`;
+  return `${Math.max(0, Math.min(100, Math.round(Number(value) || 0)))}%`;
 }
 
 function formatDate(value, { withTime = false } = {}) {
@@ -45,169 +43,67 @@ function formatDate(value, { withTime = false } = {}) {
   }
 
   const options = withTime
-    ? {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-      }
-    : {
-        year: "numeric",
-        month: "short",
-        day: "numeric"
-      };
-
+    ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+    : { year: "numeric", month: "short", day: "numeric" };
   return new Intl.DateTimeFormat(undefined, options).format(parsed);
 }
 
-function buildUserKey(user) {
-  if (user?.id != null) {
-    return `id:${user.id}`;
+function formatRelativeTime(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "just now";
   }
-  if (typeof user?.email === "string" && user.email.trim()) {
-    return `email:${user.email.trim().toLowerCase()}`;
+  const diffMs = Date.now() - parsed.getTime();
+  if (diffMs < 60_000) {
+    return "just now";
   }
-  if (typeof user?.username === "string" && user.username.trim()) {
-    return `username:${user.username.trim().toLowerCase()}`;
+  if (diffMs < 60 * 60_000) {
+    return `${Math.max(1, Math.round(diffMs / 60_000))}m ago`;
   }
-  return "anonymous";
+  if (diffMs < 24 * 60 * 60_000) {
+    return `${Math.max(1, Math.round(diffMs / (60 * 60_000)))}h ago`;
+  }
+  return formatDate(parsed.toISOString());
 }
 
-function readLocalStorageObject(key) {
-  if (typeof window === "undefined") {
-    return {};
-  }
-
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) {
-      return {};
-    }
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-    return parsed;
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalStorageObject(key, value) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignore storage write errors to keep profile UX resilient.
-  }
-}
-
-function getOrCreateJoinedDate(user) {
-  const userKey = buildUserKey(user);
-  const meta = readLocalStorageObject(PROFILE_META_STORAGE_KEY);
-
-  if (typeof meta[userKey] === "string" && meta[userKey]) {
-    return meta[userKey];
-  }
-
-  const fallbackDate = new Date().toISOString();
-  writeLocalStorageObject(PROFILE_META_STORAGE_KEY, {
-    ...meta,
-    [userKey]: fallbackDate
-  });
-  return fallbackDate;
-}
-
-function normalizeIdentity(value) {
-  return {
-    displayName:
-      typeof value?.displayName === "string" && value.displayName.trim()
-        ? value.displayName.trim()
-        : "",
-    email: typeof value?.email === "string" ? value.email.trim().toLowerCase() : "",
-    bio: typeof value?.bio === "string" ? value.bio.trim() : "",
-    avatarDataUrl:
-      typeof value?.avatarDataUrl === "string" && value.avatarDataUrl.trim()
-        ? value.avatarDataUrl
-        : ""
-  };
-}
-
-function readIdentityForUser(user) {
-  const userKey = buildUserKey(user);
-  const store = readLocalStorageObject(PROFILE_IDENTITY_STORAGE_KEY);
-  return normalizeIdentity(store[userKey]);
-}
-
-function saveIdentityForUser(user, identity) {
-  const userKey = buildUserKey(user);
-  const store = readLocalStorageObject(PROFILE_IDENTITY_STORAGE_KEY);
-
-  writeLocalStorageObject(PROFILE_IDENTITY_STORAGE_KEY, {
-    ...store,
-    [userKey]: normalizeIdentity(identity)
-  });
-}
-
-function findFavoriteCategory(categoryCounts) {
-  const entries = Object.entries(categoryCounts || {}).filter(([, count]) => count > 0);
-  if (!entries.length) {
-    return "Mixed";
-  }
-
-  const [favoriteCategory] = entries.sort((a, b) => b[1] - a[1])[0];
-  return favoriteCategory;
-}
-
-function getInitials(username, email) {
+function getInitials(displayName, username, email) {
   const source =
-    typeof username === "string" && username.trim()
-      ? username.trim()
-      : typeof email === "string"
-        ? email.split("@")[0]
-        : "EL";
+    (typeof displayName === "string" && displayName.trim()) ||
+    (typeof username === "string" && username.trim()) ||
+    (typeof email === "string" && email.split("@")[0]) ||
+    "EL";
 
-  const initials = source
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((chunk) => chunk[0]?.toUpperCase() ?? "")
-    .join("");
-
-  return initials || "EL";
+  return (
+    source
+      .split(/[\s._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((chunk) => chunk[0]?.toUpperCase() ?? "")
+      .join("") || "EL"
+  );
 }
 
-function getNextStreakTarget(currentStreak) {
-  const milestones = [3, 5, 7, 10, 14, 21, 30];
-  const next = milestones.find((value) => value > currentStreak);
-  if (next) {
-    return next;
-  }
-
-  return currentStreak + 5;
-}
-
-function buildValidationErrors(formValues) {
+function buildValidationErrors(values) {
   const errors = {};
-  const displayName = formValues.displayName?.trim() ?? "";
-  const email = formValues.email?.trim() ?? "";
-  const bio = formValues.bio?.trim() ?? "";
+  const displayName = values.display_name?.trim() ?? "";
+  const username = values.username?.trim() ?? "";
+  const email = values.email?.trim() ?? "";
+  const bio = values.bio?.trim() ?? "";
 
   if (!displayName) {
-    errors.displayName = "Display name is required.";
+    errors.display_name = "Display name is required.";
   } else if (displayName.length < 2) {
-    errors.displayName = "Display name should be at least 2 characters.";
-  } else if (displayName.length > 40) {
-    errors.displayName = "Display name should be 40 characters or fewer.";
+    errors.display_name = "Display name should be at least 2 characters.";
   }
 
-  if (!email) {
-    errors.email = "Email is required.";
-  } else if (!EMAIL_PATTERN.test(email)) {
-    errors.email = "Please enter a valid email address.";
+  if (!username) {
+    errors.username = "Username is required.";
+  } else if (username.length < 3) {
+    errors.username = "Username should be at least 3 characters.";
+  }
+
+  if (email && !EMAIL_PATTERN.test(email)) {
+    errors.email = "Email is not valid.";
   }
 
   if (bio.length > MAX_BIO_LENGTH) {
@@ -217,503 +113,372 @@ function buildValidationErrors(formValues) {
   return errors;
 }
 
-function areIdentitiesEqual(first, second) {
-  const firstNormalized = normalizeIdentity(first);
-  const secondNormalized = normalizeIdentity(second);
-
-  return (
-    firstNormalized.displayName === secondNormalized.displayName &&
-    firstNormalized.email === secondNormalized.email &&
-    firstNormalized.bio === secondNormalized.bio &&
-    firstNormalized.avatarDataUrl === secondNormalized.avatarDataUrl
-  );
-}
-
-function buildSeasonRankSnapshot(stats) {
-  const currentPlayer = {
-    id: "current-user",
-    username: "You",
-    totalLemons: Math.max(0, Math.floor(toSafeNumber(stats.totalLemons))),
-    quizzesPlayed: Math.max(0, Math.floor(toSafeNumber(stats.quizzesPlayed))),
-    accuracy: Math.max(0, Math.min(100, Math.round(toSafeNumber(stats.accuracy)))),
-    isCurrentUser: true
-  };
-
-  const rows = [...SEASON_REFERENCE_PLAYERS, currentPlayer]
-    .sort((first, second) => {
-      if (second.totalLemons !== first.totalLemons) {
-        return second.totalLemons - first.totalLemons;
-      }
-      if (second.accuracy !== first.accuracy) {
-        return second.accuracy - first.accuracy;
-      }
-      if (second.quizzesPlayed !== first.quizzesPlayed) {
-        return second.quizzesPlayed - first.quizzesPlayed;
-      }
-      return first.username.localeCompare(second.username);
-    })
-    .map((entry, index) => ({
-      ...entry,
-      rank: index + 1
-    }));
-
-  const currentRow = rows.find((entry) => entry.isCurrentUser);
-  if (!currentRow) {
-    return null;
-  }
-
-  const safePlayers = Math.max(rows.length, 1);
-  const percentile = Math.max(1, Math.round(((safePlayers - currentRow.rank + 1) / safePlayers) * 100));
-
+function profileValuesFromPayload(profile) {
   return {
-    rank: currentRow.rank,
-    totalPlayers: safePlayers,
-    percentile
+    display_name: profile?.display_name ?? "",
+    username: profile?.username ?? "",
+    email: profile?.email ?? "",
+    bio: profile?.bio ?? "",
+    avatar_url: profile?.avatar_url ?? ""
   };
 }
 
-function getCompetitiveTier({ quizzesPlayed, totalLemons, accuracy, bestStreak }) {
-  if (quizzesPlayed < 3) {
+function getCompetitiveTier(stats) {
+  if (!stats.quizzes_played) {
     return {
       label: "Rising Learner",
-      message: "Complete a few more rounds to lock your competitive identity."
+      message: "Start a few quiz rounds to activate your progression profile."
     };
   }
-
-  if (totalLemons >= 1200 && accuracy >= 88 && bestStreak >= 8) {
+  if ((stats.rank ?? 999) <= 10 && stats.accuracy_percentage >= 85) {
     return {
       label: "Elite Challenger",
-      message: "Your profile signals top-tier consistency this season."
+      message: "You are holding premium competitive form right now."
     };
   }
-
-  if (totalLemons >= 700 && accuracy >= 80) {
-    return {
-      label: "Competitive Climber",
-      message: "Strong form. Keep pressure on the board leaders."
-    };
-  }
-
-  if (totalLemons >= 300 || bestStreak >= 4) {
+  if (stats.lemons_balance >= 300 || stats.streak >= 5) {
     return {
       label: "Momentum Builder",
-      message: "You are building reliable growth with every session."
+      message: "Your profile shows strong upward motion across recent sessions."
     };
   }
-
   return {
-    label: "Rising Learner",
-    message: "Early progress is in place. Stay active to accelerate quickly."
+    label: "Competitive Climber",
+    message: "Keep stacking rounds and your identity will sharpen fast."
   };
 }
 
-function buildMotivationCopy({
-  quizzesPlayed,
-  accuracy,
-  currentStreak,
-  totalLemons,
-  unlockedAchievements,
-  seasonRankSnapshot
-}) {
-  if (!quizzesPlayed) {
+function buildMotivationCopy(stats) {
+  if (!stats.quizzes_played) {
     return {
-      headline: "Your profile is ready to launch.",
-      message: "Start your first quiz round to enter the season board and begin earning milestones."
+      headline: "Your player profile is ready to launch.",
+      message: "Finish your next quiz round to unlock progression, rank, and achievement momentum."
     };
   }
-
-  if (seasonRankSnapshot?.rank && seasonRankSnapshot.rank <= 3) {
+  if ((stats.rank ?? 999) <= 3) {
     return {
-      headline: "You are in podium territory.",
-      message: "Defend your position before the season reset and keep your edge alive."
+      headline: "You are in podium range.",
+      message: "Protect your position and keep pressing before the season standings shift."
     };
   }
-
-  if (accuracy >= 88 && unlockedAchievements >= 4) {
+  if (stats.streak >= 5) {
     return {
-      headline: "High precision, high momentum.",
-      message: "Your profile is trending like a top competitor. Keep converting rounds into lemons."
+      headline: "Your streak is doing real work.",
+      message: "Consistency is currently your strongest edge. Keep showing up while the rhythm is active."
     };
   }
-
-  if (currentStreak >= 5) {
+  if (stats.accuracy_percentage >= 80) {
     return {
-      headline: "Streak energy is active.",
-      message: "Consistency is your advantage right now. Stay locked in and climb while momentum lasts."
+      headline: "High-accuracy sessions are compounding.",
+      message: "You are converting clean answers into real leaderboard pressure."
     };
   }
-
-  if (totalLemons >= 250) {
-    return {
-      headline: "Progress is getting noticeable.",
-      message: "You are stacking meaningful rewards. Push a few strong sessions for a bigger jump."
-    };
-  }
-
   return {
-    headline: "Keep your growth loop active.",
-    message: "Each session sharpens your stats. Keep showing up and your profile will compound."
+    headline: "Progress is building under the surface.",
+    message: "Your next few sessions can turn this profile into something noticeably stronger."
   };
 }
 
-function buildAchievementProgressLabel(achievement) {
-  if (achievement.id === "sharp_accuracy") {
-    return `${formatPercent(achievement.current)} / ${achievement.target}%`;
-  }
+function buildProgressCards(stats) {
+  const xpProgress = stats.xp_for_next_level
+    ? Math.round((stats.xp_into_level / stats.xp_for_next_level) * 100)
+    : 0;
+  const nextStreakTarget = stats.streak < 3 ? 3 : stats.streak < 7 ? 7 : stats.streak + 3;
+  const streakProgress = Math.min(100, Math.round((stats.streak / Math.max(1, nextStreakTarget)) * 100));
+  const unlocked = stats.achievements.filter((achievement) => achievement.unlocked).length;
+  const achievementCompletion = stats.achievements.length
+    ? Math.round((unlocked / stats.achievements.length) * 100)
+    : 0;
 
-  return `${formatNumber(achievement.current)} / ${formatNumber(achievement.target)}`;
+  return {
+    xpProgress,
+    nextStreakTarget,
+    streakProgress,
+    unlocked,
+    achievementCompletion
+  };
+}
+
+function emptyStats(userId = 0) {
+  return {
+    user_id: userId,
+    level: 1,
+    xp: 0,
+    xp_into_level: 0,
+    xp_for_next_level: 300,
+    lemons_balance: 0,
+    streak: 0,
+    best_streak: 0,
+    total_points: 0,
+    quizzes_played: 0,
+    quizzes_won: 0,
+    correct_answers: 0,
+    total_questions_answered: 0,
+    accuracy_percentage: 0,
+    favorite_category: null,
+    categories_explored: 0,
+    rank: null,
+    recent_activity: [],
+    achievements: []
+  };
 }
 
 function ProfilePage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { userId } = useParams();
+  const { user, refreshUser } = useAuth();
   const saveTimerRef = useRef(null);
-  const avatarInputRef = useRef(null);
-  const displayNameInputRef = useRef(null);
 
-  const [joinedDate, setJoinedDate] = useState(null);
-  const [identity, setIdentity] = useState({
-    displayName: "",
-    email: "",
-    bio: "",
-    avatarDataUrl: ""
-  });
-  const [formValues, setFormValues] = useState(identity);
-  const [formErrors, setFormErrors] = useState({});
+  const viewingOwnProfile = !userId || String(userId) === String(user?.id);
+  const numericUserId = userId ? Number(userId) : null;
+
+  const [profile, setProfile] = useState(null);
+  const [stats, setStats] = useState(emptyStats());
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [statusNote, setStatusNote] = useState("");
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState("");
-
-  useEffect(() => {
-    const initialIdentity = normalizeIdentity({
-      displayName: user?.username ?? "Learner",
-      email: user?.email ?? "",
-      ...readIdentityForUser(user)
-    });
-
-    setJoinedDate(getOrCreateJoinedDate(user));
-    setIdentity(initialIdentity);
-    setFormValues(initialIdentity);
-    setFormErrors({});
-  }, [user]);
+  const [formValues, setFormValues] = useState(profileValuesFromPayload(null));
+  const [formErrors, setFormErrors] = useState({});
+  const [socialActionLoading, setSocialActionLoading] = useState("");
 
   useEffect(
     () => () => {
       if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
+        window.clearTimeout(saveTimerRef.current);
       }
     },
     []
   );
 
   useEffect(() => {
-    if (!isEditOpen) {
-      return undefined;
-    }
+    let isMounted = true;
 
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && !isSaving) {
-        setIsEditOpen(false);
+    const loadProfile = async () => {
+      if (!viewingOwnProfile && !Number.isFinite(numericUserId)) {
+        setLoading(false);
+        setError("User profile was not found.");
+        return;
+      }
+
+      setLoading(true);
+      setError("");
+
+      try {
+        let profileResponse;
+        let statsResponse;
+        let activityResponse;
+
+        if (viewingOwnProfile) {
+          [profileResponse, statsResponse, activityResponse] = await Promise.all([
+            getMyProfile(),
+            getMyStats(),
+            getMyActivity()
+          ]);
+
+          const localStats = readQuizProfileStats();
+          const needsSync =
+            (localStats?.quizzesPlayed ?? 0) > (statsResponse?.quizzes_played ?? 0) ||
+            (localStats?.totalLemons ?? 0) > (statsResponse?.lemons_balance ?? 0) ||
+            (localStats?.totalPoints ?? 0) > (statsResponse?.total_points ?? 0);
+
+          if (needsSync) {
+            statsResponse = await syncMyStats(buildStatsSyncPayload(localStats));
+            activityResponse = { items: statsResponse?.recent_activity ?? [] };
+          }
+        } else {
+          [profileResponse, statsResponse, activityResponse] = await Promise.all([
+            getPublicProfile(numericUserId),
+            getPublicStats(numericUserId),
+            getPublicActivity(numericUserId)
+          ]);
+        }
+
+        if (!isMounted) {
+          return;
+        }
+
+        setProfile(profileResponse);
+        setStats({ ...emptyStats(profileResponse?.id), ...statsResponse });
+        setActivity(Array.isArray(activityResponse?.items) ? activityResponse.items : []);
+        setFormValues(profileValuesFromPayload(profileResponse));
+        setFormErrors({});
+      } catch (loadError) {
+        if (!isMounted) {
+          return;
+        }
+        setError(loadError?.detail || loadError?.message || "Unable to load profile.");
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isEditOpen, isSaving]);
-
-  useEffect(() => {
-    if (!isEditOpen) {
-      return undefined;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      displayNameInputRef.current?.focus();
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [isEditOpen]);
-
-  const quizStats = useMemo(() => readQuizProfileStats(), [user?.id, user?.email]);
-
-  const profileStats = useMemo(() => {
-    const quizzesPlayed = Math.max(0, Math.floor(toSafeNumber(quizStats.quizzesPlayed)));
-    const totalLemons = Math.max(0, Math.floor(toSafeNumber(quizStats.totalLemons)));
-    const currentStreak = Math.max(0, Math.floor(toSafeNumber(quizStats.currentStreak)));
-    const bestStreak = Math.max(0, Math.floor(toSafeNumber(quizStats.bestStreak)));
-    const totalCorrectAnswers = Math.max(0, Math.floor(toSafeNumber(quizStats.totalCorrectAnswers)));
-    const totalQuestionsAnswered = Math.max(
-      0,
-      Math.floor(toSafeNumber(quizStats.totalQuestionsAnswered))
-    );
-    const accuracy = totalQuestionsAnswered
-      ? Math.round((totalCorrectAnswers / totalQuestionsAnswered) * 100)
-      : 0;
-    const wrongAnswers = Math.max(0, totalQuestionsAnswered - totalCorrectAnswers);
-    const favoriteCategory = findFavoriteCategory(quizStats.categoryCounts);
-    const categoriesExplored = Object.keys(quizStats.categoryCounts ?? {}).length;
-    const averageLemonsPerQuiz = quizzesPlayed ? Math.round(totalLemons / quizzesPlayed) : 0;
-    const consistencyScore = Math.max(
-      0,
-      Math.min(
-        100,
-        Math.round(accuracy * 0.65 + (Math.min(bestStreak, 20) / 20) * 35)
-      )
-    );
-    const recentRounds = Array.isArray(quizStats.recentRounds) ? quizStats.recentRounds : [];
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const roundsLast7Days = recentRounds.filter((round) => {
-      const playedAt = new Date(round.playedAt).getTime();
-      return Number.isFinite(playedAt) && playedAt >= sevenDaysAgo;
-    }).length;
-    const recentBestAccuracy = recentRounds.length
-      ? Math.max(...recentRounds.slice(0, 5).map((round) => toSafeNumber(round.accuracy)))
-      : 0;
-
-    return {
-      quizzesPlayed,
-      totalLemons,
-      accuracy,
-      wrongAnswers,
-      currentStreak,
-      bestStreak,
-      favoriteCategory,
-      categoriesExplored,
-      totalCorrectAnswers,
-      totalQuestionsAnswered,
-      averageLemonsPerQuiz,
-      consistencyScore,
-      roundsLast7Days,
-      recentBestAccuracy,
-      recentRounds
+    void loadProfile();
+    return () => {
+      isMounted = false;
     };
-  }, [quizStats]);
+  }, [numericUserId, viewingOwnProfile]);
 
-  const levelData = useMemo(() => {
-    const safeLemons = Math.max(0, profileStats.totalLemons);
-    const level = Math.floor(safeLemons / LEMONS_PER_LEVEL) + 1;
-    const levelBase = (level - 1) * LEMONS_PER_LEVEL;
-    const nextLevelTarget = level * LEMONS_PER_LEVEL;
-    const lemonsToNext = Math.max(0, nextLevelTarget - safeLemons);
-    const levelProgress = Math.round(((safeLemons - levelBase) / LEMONS_PER_LEVEL) * 100);
-    const streakTarget = getNextStreakTarget(profileStats.currentStreak);
-    const streakProgress = Math.min(
-      100,
-      Math.round((profileStats.currentStreak / Math.max(1, streakTarget)) * 100)
-    );
+  const validationErrors = useMemo(() => buildValidationErrors(formValues), [formValues]);
+  const hasChanges = useMemo(() => {
+    const original = profileValuesFromPayload(profile);
+    return JSON.stringify(original) !== JSON.stringify(formValues);
+  }, [formValues, profile]);
 
-    return {
-      level,
-      levelProgress,
-      nextLevelTarget,
-      lemonsToNext,
-      streakTarget,
-      streakProgress
-    };
-  }, [profileStats.currentStreak, profileStats.totalLemons]);
+  const tier = useMemo(() => getCompetitiveTier(stats), [stats]);
+  const motivation = useMemo(() => buildMotivationCopy(stats), [stats]);
+  const progress = useMemo(() => buildProgressCards(stats), [stats]);
+  const unlockedAchievements = stats.achievements.filter((achievement) => achievement.unlocked).length;
+  const nextAchievement = stats.achievements.find((achievement) => !achievement.unlocked) ?? null;
+  const initials = getInitials(profile?.display_name, profile?.username, profile?.email);
+  const recentActivity = activity.length ? activity : stats.recent_activity;
 
-  const seasonRankSnapshot = useMemo(() => buildSeasonRankSnapshot(profileStats), [profileStats]);
-  const tier = useMemo(() => getCompetitiveTier(profileStats), [profileStats]);
-
-  const achievements = useMemo(
-    () => [
-      {
-        id: "first_quiz",
-        label: "First Quiz Completed",
-        current: profileStats.quizzesPlayed,
-        target: 1,
-        unlocked: profileStats.quizzesPlayed >= 1
-      },
-      {
-        id: "quiz_rhythm",
-        label: "10 Quiz Sessions",
-        current: profileStats.quizzesPlayed,
-        target: 10,
-        unlocked: profileStats.quizzesPlayed >= 10
-      },
-      {
-        id: "sharp_accuracy",
-        label: "80% Accuracy",
-        current: profileStats.accuracy,
-        target: 80,
-        unlocked: profileStats.accuracy >= 80 && profileStats.quizzesPlayed >= 3
-      },
-      {
-        id: "streak_builder",
-        label: "5x Streak",
-        current: profileStats.bestStreak,
-        target: 5,
-        unlocked: profileStats.bestStreak >= 5
-      },
-      {
-        id: "lemon_collector",
-        label: "200 Lemons",
-        current: profileStats.totalLemons,
-        target: 200,
-        unlocked: profileStats.totalLemons >= 200
-      },
-      {
-        id: "category_explorer",
-        label: "3 Categories Explored",
-        current: profileStats.categoriesExplored,
-        target: 3,
-        unlocked: profileStats.categoriesExplored >= 3
-      }
-    ],
-    [profileStats]
-  );
-
-  const unlockedAchievements = useMemo(
-    () => achievements.filter((achievement) => achievement.unlocked).length,
-    [achievements]
-  );
-  const achievementCompletion = Math.round((unlockedAchievements / achievements.length) * 100);
-  const nextAchievement = achievements.find((achievement) => !achievement.unlocked) ?? null;
-  const nextAchievementProgress = nextAchievement
-    ? Math.min(100, Math.round((nextAchievement.current / Math.max(1, nextAchievement.target)) * 100))
-    : 100;
-  const nextAchievementRemaining = nextAchievement
-    ? Math.max(0, nextAchievement.target - nextAchievement.current)
-    : 0;
-
-  const motivation = useMemo(
-    () =>
-      buildMotivationCopy({
-        ...profileStats,
-        unlockedAchievements,
-        seasonRankSnapshot
-      }),
-    [profileStats, seasonRankSnapshot, unlockedAchievements]
-  );
-
-  const profileValidationErrors = useMemo(() => buildValidationErrors(formValues), [formValues]);
-  const hasChanges = useMemo(() => !areIdentitiesEqual(formValues, identity), [formValues, identity]);
-  const isSaveDisabled = isSaving || !hasChanges || Object.keys(profileValidationErrors).length > 0;
-
-  const displayName = identity.displayName || "Learner";
-  const email = identity.email || "No email available";
-  const initials = getInitials(displayName, email);
-
-  const openEditProfile = () => {
-    setFormValues(identity);
+  const handleOpenEdit = () => {
+    setFormValues(profileValuesFromPayload(profile));
     setFormErrors({});
     setSaveFeedback("");
     setIsEditOpen(true);
   };
 
-  const closeEditProfile = () => {
+  const handleCloseEdit = () => {
     if (isSaving) {
       return;
     }
     setIsEditOpen(false);
     setFormErrors({});
-    setFormValues(identity);
+    setFormValues(profileValuesFromPayload(profile));
   };
 
-  const handleFieldChange = (field, value) => {
-    setFormValues((previous) => ({
-      ...previous,
-      [field]: value
-    }));
-    setFormErrors((previous) => {
-      if (!previous[field]) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next[field];
-      return next;
-    });
-  };
-
-  const handleFieldBlur = (field) => {
-    const errors = buildValidationErrors(formValues);
-    setFormErrors((previous) => {
-      const next = { ...previous };
-      if (errors[field]) {
-        next[field] = errors[field];
-      } else {
-        delete next[field];
-      }
-      return next;
-    });
-  };
-
-  const handleAvatarUpload = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    if (!file.type.startsWith("image/")) {
-      setFormErrors((previous) => ({
-        ...previous,
-        avatarDataUrl: "Please choose an image file."
-      }));
-      event.target.value = "";
-      return;
-    }
-
-    if (file.size > MAX_AVATAR_FILE_SIZE) {
-      setFormErrors((previous) => ({
-        ...previous,
-        avatarDataUrl: "Image should be 1MB or smaller."
-      }));
-      event.target.value = "";
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setFormValues((previous) => ({
-        ...previous,
-        avatarDataUrl: typeof reader.result === "string" ? reader.result : previous.avatarDataUrl
-      }));
-      setFormErrors((previous) => {
-        const next = { ...previous };
-        delete next.avatarDataUrl;
-        return next;
-      });
-    };
-    reader.readAsDataURL(file);
-    event.target.value = "";
-  };
-
-  const handleRemoveAvatar = () => {
-    setFormValues((previous) => ({
-      ...previous,
-      avatarDataUrl: ""
-    }));
-    setFormErrors((previous) => {
-      const next = { ...previous };
-      delete next.avatarDataUrl;
-      return next;
-    });
-  };
-
-  const handleSaveProfile = (event) => {
+  const handleSaveProfile = async (event) => {
     event.preventDefault();
-    const errors = buildValidationErrors(formValues);
-    setFormErrors(errors);
-
-    if (Object.keys(errors).length) {
+    const nextErrors = buildValidationErrors(formValues);
+    setFormErrors(nextErrors);
+    if (Object.keys(nextErrors).length) {
       return;
     }
 
     setIsSaving(true);
+    try {
+      const updated = await updateMyProfile({
+        display_name: formValues.display_name.trim(),
+        username: formValues.username.trim(),
+        bio: formValues.bio.trim(),
+        avatar_url: formValues.avatar_url.trim()
+      });
 
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-    }
-
-    const nextIdentity = normalizeIdentity(formValues);
-
-    saveTimerRef.current = window.setTimeout(() => {
-      setIdentity(nextIdentity);
-      saveIdentityForUser(user, nextIdentity);
-      setIsSaving(false);
+      setProfile(updated);
+      setFormValues(profileValuesFromPayload(updated));
       setIsEditOpen(false);
       setSaveFeedback(`Profile updated ${formatDate(new Date().toISOString(), { withTime: true })}.`);
-    }, 520);
+      await refreshUser();
+    } catch (saveError) {
+      setFormErrors((previous) => ({
+        ...previous,
+        form: saveError?.detail || saveError?.message || "Unable to save profile."
+      }));
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const refreshPublicProfile = async () => {
+    if (viewingOwnProfile || !numericUserId) {
+      return;
+    }
+
+    const [profileResponse, statsResponse, activityResponse] = await Promise.all([
+      getPublicProfile(numericUserId),
+      getPublicStats(numericUserId),
+      getPublicActivity(numericUserId)
+    ]);
+    setProfile(profileResponse);
+    setStats({ ...emptyStats(profileResponse?.id), ...statsResponse });
+    setActivity(Array.isArray(activityResponse?.items) ? activityResponse.items : []);
+  };
+
+  const handlePublicAction = async (actionType) => {
+    if (!profile?.id) {
+      return;
+    }
+    setSocialActionLoading(actionType);
+    setStatusNote("");
+    try {
+      if (actionType === "add-friend") {
+        await sendFriendRequest(profile.id);
+        setStatusNote("Friend request sent.");
+        await refreshPublicProfile();
+      } else if (actionType === "cancel-request" && profile.relationship?.request_id) {
+        await cancelFriendRequest(profile.relationship.request_id);
+        setStatusNote("Friend request canceled.");
+        await refreshPublicProfile();
+      } else if (actionType === "accept-request" && profile.relationship?.request_id) {
+        await acceptFriendRequest(profile.relationship.request_id);
+        setStatusNote("Friend request accepted.");
+        await refreshPublicProfile();
+      } else if (actionType === "reject-request" && profile.relationship?.request_id) {
+        await declineFriendRequest(profile.relationship.request_id);
+        setStatusNote("Friend request rejected.");
+        await refreshPublicProfile();
+      } else if (actionType === "message") {
+        const conversation = await createOrGetDirectConversation(profile.id);
+        navigate("/social", { state: { conversationId: conversation.id } });
+      } else if (actionType === "challenge") {
+        const conversation = await createOrGetDirectConversation(profile.id);
+        navigate("/social", {
+          state: { conversationId: conversation.id, openChallengeComposer: true }
+        });
+      }
+    } catch (actionError) {
+      setStatusNote(actionError?.detail || actionError?.message || "Action failed.");
+    } finally {
+      setSocialActionLoading("");
+    }
+  };
+
+  if (loading) {
+    return (
+      <main className="page-shell profile-page">
+        <section className="profile-shell">
+          <div className="loading-text">Loading player profile...</div>
+        </section>
+      </main>
+    );
+  }
+
+  if (error || !profile) {
+    return (
+      <main className="page-shell profile-page">
+        <section className="profile-shell">
+          <header className="profile-header">
+            <div>
+              <div className="brand-mark">English Lemon</div>
+              <h1>Player Profile</h1>
+            </div>
+            <button
+              type="button"
+              className="secondary-btn profile-nav-btn"
+              onClick={() => navigate("/dashboard")}
+            >
+              Back to Dashboard
+            </button>
+          </header>
+
+          <article className="feature-card profile-motivation-card">
+            <p className="profile-motivation-label">Profile Unavailable</p>
+            <p className="profile-motivation-message">{error || "Unable to load profile."}</p>
+            <p className="profile-motivation-subtle">
+              Try again in a moment. The rest of the app is still available.
+            </p>
+          </article>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="page-shell profile-page">
@@ -721,19 +486,23 @@ function ProfilePage() {
         <header className="profile-header">
           <div>
             <div className="brand-mark">English Lemon</div>
-            <h1>Player Profile</h1>
+            <h1>{viewingOwnProfile ? "Player Profile" : `${profile.display_name}'s Profile`}</h1>
             <p className="dashboard-subtitle">
-              Your identity, competitive momentum, achievements, and performance progression in one
-              premium player dashboard.
+              {viewingOwnProfile
+                ? "Your identity, progression, achievements, and performance in one premium player dashboard."
+                : "Public player identity, visible progression, and live competitive presence."}
             </p>
           </div>
-          <button
-            type="button"
-            className="secondary-btn profile-nav-btn"
-            onClick={() => navigate("/dashboard")}
-          >
-            Back to Dashboard
-          </button>
+          <div className="profile-header-actions">
+            {viewingOwnProfile ? <NotificationBell compact /> : null}
+            <button
+              type="button"
+              className="secondary-btn profile-nav-btn"
+              onClick={() => navigate("/dashboard")}
+            >
+              Back to Dashboard
+            </button>
+          </div>
         </header>
 
         {saveFeedback ? (
@@ -741,82 +510,146 @@ function ProfilePage() {
             {saveFeedback}
           </p>
         ) : null}
+        {statusNote ? <p className="profile-save-feedback is-warning">{statusNote}</p> : null}
 
         <section className="profile-hero-grid">
           <article className="feature-card profile-hero-card">
             <div className="profile-avatar-wrap">
-              <div className={`profile-avatar ${identity.avatarDataUrl ? "has-image" : ""}`}>
-                {identity.avatarDataUrl ? (
-                  <img src={identity.avatarDataUrl} alt={`${displayName} avatar`} />
+              <div className={`profile-avatar ${profile.avatar_url ? "has-image" : ""}`}>
+                {profile.avatar_url ? (
+                  <img src={profile.avatar_url} alt={`${profile.display_name} avatar`} />
                 ) : (
                   initials
                 )}
               </div>
-              <span className="profile-level-pill">Level {levelData.level}</span>
+              <span className="profile-level-pill">Level {stats.level}</span>
               <span className="profile-level-pill">{tier.label}</span>
             </div>
 
             <div className="profile-hero-copy">
-              <p className="profile-name">{displayName}</p>
-              <p className="profile-email">{email}</p>
+              <p className="profile-name">{profile.display_name}</p>
+              <p className="profile-email">
+                {viewingOwnProfile ? profile.email : `@${profile.username}`}
+              </p>
               <div className="profile-meta-row">
-                <span>Joined {formatDate(joinedDate)}</span>
-                {profileStats.recentRounds[0]?.playedAt ? (
-                  <span>
-                    Last active {formatDate(profileStats.recentRounds[0].playedAt, { withTime: true })}
-                  </span>
+                <span>Joined {formatDate(profile.joined_at)}</span>
+                {recentActivity[0]?.created_at ? (
+                  <span>Last active {formatRelativeTime(recentActivity[0].created_at)}</span>
                 ) : null}
-                {seasonRankSnapshot ? (
-                  <span>
-                    Season rank #{seasonRankSnapshot.rank} / {seasonRankSnapshot.totalPlayers}
-                  </span>
+                {stats.rank ? <span>Rank #{stats.rank}</span> : <span>Rank pending</span>}
+                {profile.relationship?.relationship_status && !viewingOwnProfile ? (
+                  <span>{profile.relationship.relationship_status.replaceAll("_", " ")}</span>
                 ) : null}
               </div>
               <p className="profile-bio">
-                {identity.bio || "Focused on steady growth, better accuracy, and strong streak discipline."}
+                {profile.bio ||
+                  "Focused on steady growth, sharper answers, and keeping competitive momentum alive."}
               </p>
             </div>
 
             <div className="profile-hero-highlights">
               <article>
-                <span>Total Lemons</span>
-                <strong>🍋 {formatNumber(profileStats.totalLemons)}</strong>
+                <span>Lemons</span>
+                <strong>{formatNumber(stats.lemons_balance)}</strong>
               </article>
               <article>
                 <span>Current Streak</span>
-                <strong>{formatNumber(profileStats.currentStreak)}x</strong>
+                <strong>{formatNumber(stats.streak)}x</strong>
               </article>
               <article>
-                <span>Season Position</span>
-                <strong>
-                  {seasonRankSnapshot
-                    ? `#${seasonRankSnapshot.rank} (${seasonRankSnapshot.percentile}th pct)`
-                    : "Unranked"}
-                </strong>
+                <span>Total Points</span>
+                <strong>{formatNumber(stats.total_points)}</strong>
               </article>
               <article>
                 <span>Achievements</span>
                 <strong>
-                  {formatNumber(unlockedAchievements)} / {formatNumber(achievements.length)}
+                  {formatNumber(unlockedAchievements)} / {formatNumber(stats.achievements.length)}
                 </strong>
               </article>
             </div>
 
             <div className="profile-identity-actions">
-              <button
-                type="button"
-                className="secondary-btn profile-edit-btn"
-                onClick={openEditProfile}
-              >
-                Edit Profile
-              </button>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => navigate("/leaderboard")}
-              >
-                View Leaderboard
-              </button>
+              {viewingOwnProfile ? (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-btn profile-edit-btn"
+                    onClick={handleOpenEdit}
+                  >
+                    Edit Profile
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => navigate("/leaderboard")}
+                  >
+                    View Leaderboard
+                  </button>
+                </>
+              ) : (
+                <>
+                  {profile.relationship?.relationship_status === "none" ? (
+                    <button
+                      type="button"
+                      className="secondary-btn profile-edit-btn"
+                      onClick={() => void handlePublicAction("add-friend")}
+                      disabled={socialActionLoading === "add-friend"}
+                    >
+                      {socialActionLoading === "add-friend" ? "Sending..." : "Add Friend"}
+                    </button>
+                  ) : null}
+                  {profile.relationship?.relationship_status === "outgoing_request" ? (
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => void handlePublicAction("cancel-request")}
+                      disabled={socialActionLoading === "cancel-request"}
+                    >
+                      Cancel Request
+                    </button>
+                  ) : null}
+                  {profile.relationship?.relationship_status === "incoming_request" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="secondary-btn profile-edit-btn"
+                        onClick={() => void handlePublicAction("accept-request")}
+                        disabled={socialActionLoading === "accept-request"}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => void handlePublicAction("reject-request")}
+                        disabled={socialActionLoading === "reject-request"}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  ) : null}
+                  {profile.relationship?.can_message ? (
+                    <>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => void handlePublicAction("message")}
+                        disabled={socialActionLoading === "message"}
+                      >
+                        Message
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => void handlePublicAction("challenge")}
+                        disabled={socialActionLoading === "challenge"}
+                      >
+                        Challenge
+                      </button>
+                    </>
+                  ) : null}
+                </>
+              )}
               <span className="profile-edit-hint">{tier.message}</span>
             </div>
           </article>
@@ -826,138 +659,111 @@ function ProfilePage() {
             <p className="profile-motivation-message">{motivation.headline}</p>
             <p className="profile-motivation-subtle">{motivation.message}</p>
             <div className="profile-motivation-pills">
-              <span>{formatPercent(profileStats.accuracy)} Accuracy</span>
-              <span>{formatNumber(profileStats.quizzesPlayed)} Quizzes</span>
-              <span>{formatNumber(profileStats.averageLemonsPerQuiz)} Lemons / Quiz</span>
-              <span>{formatNumber(profileStats.roundsLast7Days)} Rounds in 7 Days</span>
+              <span>{formatPercent(stats.accuracy_percentage)} Accuracy</span>
+              <span>{formatNumber(stats.quizzes_played)} Quizzes</span>
+              <span>{formatNumber(stats.quizzes_won)} Wins</span>
+              <span>{formatNumber(stats.categories_explored)} Categories</span>
             </div>
           </article>
         </section>
 
         <section className="profile-stats-grid">
           <article className="feature-card profile-stat-card is-lemons">
-            <span>Total Lemons</span>
-            <strong>{formatNumber(profileStats.totalLemons)}</strong>
+            <span>Lemons Balance</span>
+            <strong>{formatNumber(stats.lemons_balance)}</strong>
+          </article>
+          <article className="feature-card profile-stat-card">
+            <span>Total Points</span>
+            <strong>{formatNumber(stats.total_points)}</strong>
           </article>
           <article className="feature-card profile-stat-card">
             <span>Quizzes Played</span>
-            <strong>{formatNumber(profileStats.quizzesPlayed)}</strong>
+            <strong>{formatNumber(stats.quizzes_played)}</strong>
+          </article>
+          <article className="feature-card profile-stat-card">
+            <span>Quizzes Won</span>
+            <strong>{formatNumber(stats.quizzes_won)}</strong>
+          </article>
+          <article className="feature-card profile-stat-card">
+            <span>Correct Answers</span>
+            <strong>{formatNumber(stats.correct_answers)}</strong>
           </article>
           <article className="feature-card profile-stat-card">
             <span>Accuracy</span>
-            <strong>{formatPercent(profileStats.accuracy)}</strong>
-          </article>
-          <article className="feature-card profile-stat-card">
-            <span>Consistency Score</span>
-            <strong>{formatPercent(profileStats.consistencyScore)}</strong>
-          </article>
-          <article className="feature-card profile-stat-card">
-            <span>Current Streak</span>
-            <strong>{formatNumber(profileStats.currentStreak)}x</strong>
+            <strong>{formatPercent(stats.accuracy_percentage)}</strong>
           </article>
           <article className="feature-card profile-stat-card">
             <span>Best Streak</span>
-            <strong>{formatNumber(profileStats.bestStreak)}x</strong>
+            <strong>{formatNumber(stats.best_streak)}x</strong>
           </article>
           <article className="feature-card profile-stat-card">
-            <span>Season Rank</span>
-            <strong>{seasonRankSnapshot ? `#${seasonRankSnapshot.rank}` : "--"}</strong>
+            <span>Rank</span>
+            <strong>{stats.rank ? `#${stats.rank}` : "--"}</strong>
           </article>
           <article className="feature-card profile-stat-card">
             <span>Favorite Category</span>
-            <strong className="profile-category-badge">{profileStats.favoriteCategory}</strong>
+            <strong className="profile-category-badge">{stats.favorite_category || "Mixed"}</strong>
           </article>
         </section>
 
         <section className="profile-progress-grid">
           <article className="feature-card profile-progress-card">
-            <p className="profile-progress-title">Next Level</p>
+            <p className="profile-progress-title">XP Progress</p>
             <div className="profile-progress-headline">
-              <strong>Level {levelData.level}</strong>
-              <span>{formatNumber(levelData.lemonsToNext)} lemons to Level {levelData.level + 1}</span>
+              <strong>Level {stats.level}</strong>
+              <span>
+                {formatNumber(stats.xp_into_level)} / {formatNumber(stats.xp_for_next_level)} XP
+              </span>
             </div>
-            <div
-              className="profile-progress-track"
-              role="progressbar"
-              aria-valuenow={levelData.levelProgress}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="profile-progress-fill" style={{ width: `${levelData.levelProgress}%` }} />
+            <div className="profile-progress-track" role="progressbar" aria-valuenow={progress.xpProgress} aria-valuemin={0} aria-valuemax={100}>
+              <div className="profile-progress-fill" style={{ width: `${progress.xpProgress}%` }} />
             </div>
             <p className="profile-progress-footnote">
-              Target: {formatNumber(levelData.nextLevelTarget)} total lemons
+              {formatNumber(Math.max(0, stats.xp_for_next_level - stats.xp_into_level))} XP to next level
             </p>
           </article>
 
           <article className="feature-card profile-progress-card">
             <p className="profile-progress-title">Streak Milestone</p>
             <div className="profile-progress-headline">
-              <strong>{formatNumber(profileStats.currentStreak)}x current</strong>
-              <span>
-                {formatNumber(Math.max(0, levelData.streakTarget - profileStats.currentStreak))} to{" "}
-                {formatNumber(levelData.streakTarget)}x
-              </span>
+              <strong>{formatNumber(stats.streak)}x current</strong>
+              <span>{formatNumber(progress.nextStreakTarget)}x next target</span>
             </div>
-            <div
-              className="profile-progress-track"
-              role="progressbar"
-              aria-valuenow={levelData.streakProgress}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="profile-progress-fill is-cool" style={{ width: `${levelData.streakProgress}%` }} />
+            <div className="profile-progress-track" role="progressbar" aria-valuenow={progress.streakProgress} aria-valuemin={0} aria-valuemax={100}>
+              <div className="profile-progress-fill is-cool" style={{ width: `${progress.streakProgress}%` }} />
             </div>
-            <p className="profile-progress-footnote">Keep your daily rhythm alive to unlock this milestone.</p>
+            <p className="profile-progress-footnote">Stay active to convert consistency into milestone momentum.</p>
           </article>
 
           <article className="feature-card profile-progress-card">
             <p className="profile-progress-title">Achievement Progress</p>
             <div className="profile-progress-headline">
               <strong>
-                {formatNumber(unlockedAchievements)} / {formatNumber(achievements.length)} unlocked
+                {formatNumber(unlockedAchievements)} / {formatNumber(stats.achievements.length)} unlocked
               </strong>
-              <span>{formatPercent(achievementCompletion)} complete</span>
+              <span>{formatPercent(progress.achievementCompletion)}</span>
             </div>
-            <div
-              className="profile-progress-track"
-              role="progressbar"
-              aria-valuenow={achievementCompletion}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="profile-progress-fill" style={{ width: `${achievementCompletion}%` }} />
+            <div className="profile-progress-track" role="progressbar" aria-valuenow={progress.achievementCompletion} aria-valuemin={0} aria-valuemax={100}>
+              <div className="profile-progress-fill" style={{ width: `${progress.achievementCompletion}%` }} />
             </div>
             <p className="profile-progress-footnote">
               {nextAchievement
-                ? `Next: ${nextAchievement.label} (${buildAchievementProgressLabel(
-                    nextAchievement
-                  )}, ${formatNumber(nextAchievementRemaining)} remaining)`
-                : "All current milestones unlocked. Keep climbing before the season reset."}
+                ? `Next: ${nextAchievement.label} (${formatNumber(nextAchievement.current)} / ${formatNumber(nextAchievement.target)})`
+                : "All current milestones unlocked."}
             </p>
           </article>
 
           <article className="feature-card profile-progress-card">
-            <p className="profile-progress-title">Season Momentum</p>
+            <p className="profile-progress-title">Season Position</p>
             <div className="profile-progress-headline">
-              <strong>
-                {seasonRankSnapshot
-                  ? `Ahead of ${formatNumber(seasonRankSnapshot.percentile)}%`
-                  : "Build your standing"}
-              </strong>
-              <span>{formatNumber(profileStats.roundsLast7Days)} rounds this week</span>
+              <strong>{stats.rank ? `Rank #${stats.rank}` : "Unranked"}</strong>
+              <span>{formatNumber(stats.total_points)} total points</span>
             </div>
-            <div
-              className="profile-progress-track"
-              role="progressbar"
-              aria-valuenow={nextAchievementProgress}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="profile-progress-fill is-cool" style={{ width: `${nextAchievementProgress}%` }} />
+            <div className="profile-progress-track" role="progressbar" aria-valuenow={progress.xpProgress} aria-valuemin={0} aria-valuemax={100}>
+              <div className="profile-progress-fill is-cool" style={{ width: `${Math.min(100, Math.max(12, progress.xpProgress))}%` }} />
             </div>
             <p className="profile-progress-footnote">
-              Rankings reset each season. This is the best window to climb your position.
+              Rankings strengthen as more players sync competitive progress into the season board.
             </p>
           </article>
         </section>
@@ -966,29 +772,26 @@ function ProfilePage() {
           <article className="feature-card profile-activity-card">
             <p className="profile-section-title">Recent Activity</p>
             <p className="profile-empty-copy">
-              Last 5 rounds. Best recent accuracy: {formatPercent(profileStats.recentBestAccuracy)}.
+              Live player history, latest first.
             </p>
-            {profileStats.recentRounds.length ? (
+            {recentActivity.length ? (
               <ul className="profile-activity-list">
-                {profileStats.recentRounds.slice(0, 5).map((round, index) => (
-                  <li key={`${round.playedAt}-${round.category}-${index}`}>
+                {recentActivity.slice(0, 6).map((item, index) => (
+                  <li key={`${item.type}-${item.created_at}-${index}`}>
                     <div>
-                      <strong>{round.category}</strong>
-                      <span>{formatDate(round.playedAt, { withTime: true })}</span>
+                      <strong>{item.title}</strong>
+                      <span>{formatDate(item.created_at, { withTime: true })}</span>
                     </div>
                     <div className="profile-activity-metrics">
-                      <span>
-                        {formatNumber(round.totalCorrect)}/{formatNumber(round.totalQuestions)}
-                      </span>
-                      <span>{formatPercent(round.accuracy)}</span>
-                      <span>🍋 +{formatNumber(round.lemonsEarned)}</span>
+                      <span>{item.type.replaceAll("_", " ")}</span>
+                      {item.subtitle ? <span>{item.subtitle}</span> : null}
                     </div>
                   </li>
                 ))}
               </ul>
             ) : (
               <p className="profile-empty-copy">
-                Complete a quiz round to populate your recent activity timeline.
+                No recent activity yet. Complete a quiz or social action to populate this timeline.
               </p>
             )}
           </article>
@@ -996,14 +799,19 @@ function ProfilePage() {
           <article className="feature-card profile-achievements-card">
             <p className="profile-section-title">Milestones</p>
             <p className="profile-empty-copy">
-              Unlock milestones to strengthen your profile identity and progression record.
+              Unlock badges to make your player identity feel earned, not just configured.
             </p>
             <ul className="profile-achievements-list">
-              {achievements.map((achievement) => (
-                <li key={achievement.id} className={achievement.unlocked ? "is-unlocked" : "is-locked"}>
+              {stats.achievements.map((achievement) => (
+                <li
+                  key={achievement.id}
+                  className={achievement.unlocked ? "is-unlocked" : "is-locked"}
+                >
                   <span>
                     {achievement.label}
-                    {!achievement.unlocked ? ` (${buildAchievementProgressLabel(achievement)})` : ""}
+                    {!achievement.unlocked
+                      ? ` (${formatNumber(achievement.current)} / ${formatNumber(achievement.target)})`
+                      : ""}
                   </span>
                   <strong>{achievement.unlocked ? "Unlocked" : "In Progress"}</strong>
                 </li>
@@ -1013,155 +821,145 @@ function ProfilePage() {
         </section>
       </section>
 
-      <div
-        className={`profile-edit-overlay ${isEditOpen ? "is-open" : ""}`}
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget) {
-            closeEditProfile();
-          }
-        }}
-        aria-hidden={!isEditOpen}
-      >
-        <section className="profile-edit-panel" aria-modal="true" role="dialog">
-          <header className="profile-edit-header">
-            <h2>Edit Profile</h2>
-            <p>Update your player identity for the English Lemon platform.</p>
-            <p className="profile-motivation-subtle">
-              {hasChanges ? "You have unsaved changes." : "All details are currently saved."}
-            </p>
-          </header>
+      {viewingOwnProfile ? (
+        <div
+          className={`profile-edit-overlay ${isEditOpen ? "is-open" : ""}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              handleCloseEdit();
+            }
+          }}
+          aria-hidden={!isEditOpen}
+        >
+          <section className="profile-edit-panel" aria-modal="true" role="dialog">
+            <header className="profile-edit-header">
+              <h2>Edit Profile</h2>
+              <p>Update your public player identity for English Lemon.</p>
+              <p className="profile-motivation-subtle">
+                {hasChanges ? "You have unsaved changes." : "Everything is currently saved."}
+              </p>
+            </header>
 
-          <form className="profile-edit-form" onSubmit={handleSaveProfile}>
-            <div className="profile-edit-avatar-row">
-              <div className={`profile-avatar profile-avatar-edit ${formValues.avatarDataUrl ? "has-image" : ""}`}>
-                {formValues.avatarDataUrl ? (
-                  <img src={formValues.avatarDataUrl} alt="Profile avatar preview" />
-                ) : (
-                  getInitials(formValues.displayName || displayName, formValues.email || email)
-                )}
-              </div>
-              <div className="profile-edit-avatar-actions">
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={() => avatarInputRef.current?.click()}
-                >
-                  Upload Avatar
-                </button>
-                {formValues.avatarDataUrl ? (
-                  <button
-                    type="button"
-                    className="secondary-btn profile-avatar-remove-btn"
-                    onClick={handleRemoveAvatar}
-                  >
-                    Remove
-                  </button>
-                ) : null}
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleAvatarUpload}
-                  className="sr-only"
-                />
-                {formErrors.avatarDataUrl ? (
-                  <p className="profile-field-error">{formErrors.avatarDataUrl}</p>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="profile-edit-grid">
-              <label className="profile-field">
-                <span>Display Name</span>
-                <input
-                  ref={displayNameInputRef}
-                  type="text"
-                  value={formValues.displayName}
-                  onChange={(event) => handleFieldChange("displayName", event.target.value)}
-                  onBlur={() => handleFieldBlur("displayName")}
-                  placeholder="Your display name"
-                  required
-                />
-                <div className="profile-field-footnote">
-                  <span>Used across dashboard, leaderboard, and activity.</span>
+            <form className="profile-edit-form" onSubmit={handleSaveProfile}>
+              <div className="profile-edit-avatar-row">
+                <div className={`profile-avatar profile-avatar-edit ${formValues.avatar_url ? "has-image" : ""}`}>
+                  {formValues.avatar_url ? (
+                    <img src={formValues.avatar_url} alt="Avatar preview" />
+                  ) : (
+                    getInitials(formValues.display_name, formValues.username, formValues.email)
+                  )}
                 </div>
-                {formErrors.displayName ? (
-                  <p className="profile-field-error">{formErrors.displayName}</p>
-                ) : null}
-              </label>
+                <div className="profile-edit-avatar-actions">
+                  <label className="profile-field">
+                    <span>Avatar URL</span>
+                    <input
+                      type="url"
+                      value={formValues.avatar_url}
+                      onChange={(event) =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          avatar_url: event.target.value
+                        }))
+                      }
+                      placeholder="https://..."
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="profile-edit-grid">
+                <label className="profile-field">
+                  <span>Display Name</span>
+                  <input
+                    type="text"
+                    value={formValues.display_name}
+                    onChange={(event) =>
+                      setFormValues((previous) => ({
+                        ...previous,
+                        display_name: event.target.value
+                      }))
+                    }
+                    placeholder="Your display name"
+                    required
+                  />
+                  {formErrors.display_name ? (
+                    <p className="profile-field-error">{formErrors.display_name}</p>
+                  ) : null}
+                </label>
+
+                <label className="profile-field">
+                  <span>Username</span>
+                  <input
+                    type="text"
+                    value={formValues.username}
+                    onChange={(event) =>
+                      setFormValues((previous) => ({
+                        ...previous,
+                        username: event.target.value
+                      }))
+                    }
+                    placeholder="username"
+                    required
+                  />
+                  {formErrors.username ? (
+                    <p className="profile-field-error">{formErrors.username}</p>
+                  ) : null}
+                </label>
+              </div>
 
               <label className="profile-field">
                 <span>Email</span>
-                <input
-                  type="email"
-                  value={formValues.email}
-                  onChange={(event) => handleFieldChange("email", event.target.value)}
-                  onBlur={() => handleFieldBlur("email")}
-                  placeholder="you@example.com"
-                  required
+                <input type="email" value={formValues.email} disabled />
+                <div className="profile-field-footnote">
+                  <span>Email stays private and comes from your account login.</span>
+                </div>
+              </label>
+
+              <label className="profile-field">
+                <span>Bio</span>
+                <textarea
+                  value={formValues.bio}
+                  onChange={(event) =>
+                    setFormValues((previous) => ({
+                      ...previous,
+                      bio: event.target.value
+                    }))
+                  }
+                  placeholder="Share your current focus, streak target, or category grind."
+                  maxLength={MAX_BIO_LENGTH}
+                  rows={3}
                 />
                 <div className="profile-field-footnote">
-                  <span>Used for account identity and notifications later.</span>
+                  <span>
+                    {formatNumber(formValues.bio.length)} / {formatNumber(MAX_BIO_LENGTH)}
+                  </span>
                 </div>
-                {formErrors.email ? <p className="profile-field-error">{formErrors.email}</p> : null}
-              </label>
-            </div>
-
-            <label className="profile-field">
-              <span>Bio</span>
-              <textarea
-                value={formValues.bio}
-                onChange={(event) => handleFieldChange("bio", event.target.value)}
-                onBlur={() => handleFieldBlur("bio")}
-                placeholder="Share your current learning focus, streak goal, or category target."
-                maxLength={MAX_BIO_LENGTH}
-                rows={3}
-              />
-              <div className="profile-field-footnote">
-                <span>
-                  {formatNumber(formValues.bio.length)}/{formatNumber(MAX_BIO_LENGTH)}
-                </span>
                 {formErrors.bio ? <p className="profile-field-error">{formErrors.bio}</p> : null}
-              </div>
-            </label>
+              </label>
 
-            <div className="profile-motivation-pills">
-              <span>Preview: {formValues.displayName || "Display Name"}</span>
-              <span>{formValues.email || "email@domain.com"}</span>
-              <span>{formValues.bio ? "Bio Added" : "No Bio Yet"}</span>
-            </div>
+              {formErrors.form ? <p className="profile-field-error">{formErrors.form}</p> : null}
 
-            <footer className="profile-edit-actions">
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={closeEditProfile}
-                disabled={isSaving}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  setFormValues(identity);
-                  setFormErrors({});
-                }}
-                disabled={isSaving || !hasChanges}
-              >
-                Reset
-              </button>
-              <button
-                type="submit"
-                className="primary-btn profile-save-btn"
-                disabled={isSaveDisabled}
-              >
-                {isSaving ? "Saving..." : "Save Changes"}
-              </button>
-            </footer>
-          </form>
-        </section>
-      </div>
+              <footer className="profile-edit-actions">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleCloseEdit}
+                  disabled={isSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary-btn profile-save-btn"
+                  disabled={isSaving || !hasChanges || Object.keys(validationErrors).length > 0}
+                >
+                  {isSaving ? "Saving..." : "Save Changes"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

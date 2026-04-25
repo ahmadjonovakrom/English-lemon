@@ -4988,6 +4988,33 @@ function SocialPage() {
                                     : "Cancel"}
                                 </button>
                               ) : null}
+                              {challenge.can_start ? (
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => navigate(`/challenges/${challenge.id}`)}
+                                >
+                                  Start Challenge
+                                </button>
+                              ) : null}
+                              {challenge.can_view_result ? (
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => navigate(`/challenges/${challenge.id}`)}
+                                >
+                                  View Result
+                                </button>
+                              ) : null}
+                              {challenge.can_rematch ? (
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => navigate(`/challenges/${challenge.id}`)}
+                                >
+                                  Rematch
+                                </button>
+                              ) : null}
                             </div>
                           ) : null}
                         </article>

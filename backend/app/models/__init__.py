@@ -1,4 +1,10 @@
-from app.models.user import User
+from app.models.user import User, UserStatsSnapshot
+from app.models.multiplayer import (
+    MultiplayerRoom,
+    MultiplayerRoomAnswer,
+    MultiplayerRoomPlayer,
+    MultiplayerRoomQuestion,
+)
 from app.models.social import (
     CallSession,
     Challenge,
@@ -13,6 +19,11 @@ from app.models.social import (
 
 __all__ = [
     "User",
+    "UserStatsSnapshot",
+    "MultiplayerRoom",
+    "MultiplayerRoomPlayer",
+    "MultiplayerRoomQuestion",
+    "MultiplayerRoomAnswer",
     "FriendRequest",
     "Friendship",
     "Conversation",

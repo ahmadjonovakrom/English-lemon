@@ -18,9 +18,13 @@ import {
   playWrongAnswerSound,
   primeQuizAudio
 } from "../features/quiz/utils/quizAudio";
-import { recordQuizRoundProgress } from "../features/quiz/utils/quizProfileStats";
+import {
+  buildStatsSyncPayload,
+  recordQuizRoundProgress
+} from "../features/quiz/utils/quizProfileStats";
 import { quizQuestions } from "../features/quiz/data/quizQuestions";
 import { calculateLemons, calculateQuizResults } from "../features/quiz/utils/quizScoring";
+import { syncMyStats } from "../api/profile";
 
 const FALLBACK_QUESTIONS = [
   {
@@ -355,13 +359,20 @@ function QuizPage() {
       return;
     }
 
-    recordQuizRoundProgress({
+    const didWin =
+      totalQuestions > 0 ? results.totalCorrect / totalQuestions >= 0.6 : false;
+    const nextStats = recordQuizRoundProgress({
       category: activeCategory,
       lemonsEarned: results.lemonsEarned,
       totalCorrect: results.totalCorrect,
       totalQuestions,
       currentStreak,
-      bestStreak: results.bestStreak
+      bestStreak: results.bestStreak,
+      didWin
+    });
+
+    void syncMyStats(buildStatsSyncPayload(nextStats)).catch((error) => {
+      console.warn("[ProfileStats] sync after quiz failed", error);
     });
 
     persistedRoundIdRef.current = currentRoundId;

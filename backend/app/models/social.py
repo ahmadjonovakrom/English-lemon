@@ -205,11 +205,21 @@ class Challenge(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(140), nullable=False, default="Quick Quiz Challenge")
+    challenge_type: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="quick_quiz", index=True
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     category: Mapped[str | None] = mapped_column(String(60), nullable=True)
     difficulty: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    challenger_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    challenged_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    winner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -225,12 +235,21 @@ class Challenge(Base):
     conversation = relationship("Conversation", back_populates="challenges")
     challenger = relationship("User", foreign_keys=[challenger_id])
     challenged = relationship("User", foreign_keys=[challenged_id])
+    winner = relationship("User", foreign_keys=[winner_id])
 
     __table_args__ = (
         CheckConstraint("challenger_id <> challenged_id", name="ck_challenge_not_self"),
         CheckConstraint(
             "status IN ('pending', 'accepted', 'declined', 'canceled', 'expired', 'completed')",
             name="ck_challenge_status",
+        ),
+        CheckConstraint(
+            "challenger_score IS NULL OR challenger_score >= 0",
+            name="ck_challenge_challenger_score_non_negative",
+        ),
+        CheckConstraint(
+            "challenged_score IS NULL OR challenged_score >= 0",
+            name="ck_challenge_challenged_score_non_negative",
         ),
         Index("ix_challenges_conversation_status", "conversation_id", "status", "created_at"),
         Index("ix_challenges_challenged_status", "challenged_id", "status", "created_at"),

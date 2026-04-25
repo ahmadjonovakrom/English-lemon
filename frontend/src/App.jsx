@@ -1,3 +1,4 @@
+import { Component } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useAuth } from "./context/AuthContext";
@@ -21,6 +22,51 @@ function RootRedirect() {
   }
 
   return <Navigate to={user ? "/dashboard" : "/login"} replace />;
+}
+
+class SocialPageBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("[SocialPage] render failed", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="page-shell social-page">
+          <section className="social-shell">
+            <div className="feature-card social-chat-empty">
+              <span className="social-empty-badge">Social Arena</span>
+              <h2>Social page needs a refresh</h2>
+              <p className="subtle-text">
+                The app loaded, but the social workspace hit a display issue. Refresh the page or try again in a moment.
+              </p>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => {
+                  this.setState({ error: null });
+                  window.location.reload();
+                }}
+              >
+                Refresh Social
+              </button>
+            </div>
+          </section>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 function App() {
@@ -65,7 +111,9 @@ function App() {
         path="/social"
         element={
           <ProtectedRoute>
-            <SocialPage />
+            <SocialPageBoundary>
+              <SocialPage />
+            </SocialPageBoundary>
           </ProtectedRoute>
         }
       />

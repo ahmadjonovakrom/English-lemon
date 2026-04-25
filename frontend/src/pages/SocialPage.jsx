@@ -219,6 +219,10 @@ function normalizeCallStatus(value) {
   return normalized;
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 function getCallStatusLabel(status) {
   const normalized = normalizeCallStatus(status);
   if (normalized === "ringing") {
@@ -297,7 +301,7 @@ function normalizeSessionDescriptionInput(rawValue, expectedType, contextLabel) 
     if (typeof rawValue.type === "string") {
       declaredType = rawValue.type.trim().toLowerCase();
     }
-    if (declaredType === "candidate" || Object.hasOwn(rawValue, "candidate")) {
+    if (declaredType === "candidate" || hasOwn(rawValue, "candidate")) {
       throw new Error(`${contextLabel} is an ICE candidate, not a WebRTC session description.`);
     }
     if (typeof rawValue.sdp === "string") {
@@ -323,7 +327,7 @@ function normalizeSessionDescriptionInput(rawValue, expectedType, contextLabel) 
           if (typeof parsed.type === "string") {
             declaredType = parsed.type.trim().toLowerCase();
           }
-          if (declaredType === "candidate" || Object.hasOwn(parsed, "candidate")) {
+          if (declaredType === "candidate" || hasOwn(parsed, "candidate")) {
             throw new Error(`${contextLabel} is an ICE candidate, not a WebRTC session description.`);
           }
           if (typeof parsed.sdp === "string") {
@@ -1080,6 +1084,14 @@ function initialsForUser(user) {
     .slice(0, 2)
     .map((chunk) => chunk[0]?.toUpperCase() ?? "")
     .join("");
+}
+
+function displayNameForUser(user, fallback = "English Lemon Player") {
+  return user?.display_name || user?.username || fallback;
+}
+
+function usernameForUser(user) {
+  return user?.username ? `@${user.username}` : "@player";
 }
 
 function resolveCallPhaseCopy(phase, callStatus, peerName) {
@@ -3152,78 +3164,92 @@ function SocialPage() {
     if (!silent) {
       setIsLoading(true);
     }
-    const [friendsResult, requestsResult, conversationsResult] = await Promise.allSettled([
-      listFriends(),
-      listFriendRequests(),
-      listConversations()
-    ]);
+    try {
+      const [friendsResult, requestsResult, conversationsResult] = await Promise.allSettled([
+        listFriends(),
+        listFriendRequests(),
+        listConversations()
+      ]);
 
-    const errors = [];
+      const errors = [];
 
-    if (friendsResult.status === "fulfilled") {
-      setFriends(Array.isArray(friendsResult.value) ? friendsResult.value : []);
-    } else {
+      if (friendsResult.status === "fulfilled") {
+        setFriends(Array.isArray(friendsResult.value) ? friendsResult.value : []);
+      } else {
+        setFriends([]);
+        errors.push(
+          toErrorMessage(friendsResult.reason, "Unable to load friends.", {
+            forSocialBootstrap: true
+          })
+        );
+      }
+
+      if (requestsResult.status === "fulfilled") {
+        setIncomingRequests(
+          Array.isArray(requestsResult.value?.incoming) ? requestsResult.value.incoming : []
+        );
+        setOutgoingRequests(
+          Array.isArray(requestsResult.value?.outgoing) ? requestsResult.value.outgoing : []
+        );
+      } else {
+        setIncomingRequests([]);
+        setOutgoingRequests([]);
+        errors.push(
+          toErrorMessage(requestsResult.reason, "Unable to load friend requests.", {
+            forSocialBootstrap: true
+          })
+        );
+      }
+
+      if (conversationsResult.status === "fulfilled") {
+        const conversationRows = Array.isArray(conversationsResult.value?.conversations)
+          ? conversationsResult.value.conversations
+          : [];
+        setConversations(conversationRows);
+        setTotalUnread(
+          Number.isFinite(conversationsResult.value?.total_unread)
+            ? conversationsResult.value.total_unread
+            : 0
+        );
+        setSelectedConversationId((previous) => {
+          if (previous && conversationRows.some((row) => row.id === previous)) {
+            return previous;
+          }
+          return conversationRows[0]?.id ?? null;
+        });
+      } else {
+        setConversations([]);
+        setTotalUnread(0);
+        setSelectedConversationId(null);
+        errors.push(
+          toErrorMessage(conversationsResult.reason, "Unable to load conversations.", {
+            forSocialBootstrap: true
+          })
+        );
+      }
+
+      if (errors.length) {
+        const uniqueErrors = [...new Set(errors)];
+        setStatusNote(uniqueErrors[0]);
+      } else {
+        setStatusNote("");
+      }
+    } catch (error) {
       setFriends([]);
-      errors.push(
-        toErrorMessage(friendsResult.reason, "Unable to load friends.", {
-          forSocialBootstrap: true
-        })
-      );
-    }
-
-    if (requestsResult.status === "fulfilled") {
-      setIncomingRequests(
-        Array.isArray(requestsResult.value?.incoming) ? requestsResult.value.incoming : []
-      );
-      setOutgoingRequests(
-        Array.isArray(requestsResult.value?.outgoing) ? requestsResult.value.outgoing : []
-      );
-    } else {
       setIncomingRequests([]);
       setOutgoingRequests([]);
-      errors.push(
-        toErrorMessage(requestsResult.reason, "Unable to load friend requests.", {
-          forSocialBootstrap: true
-        })
-      );
-    }
-
-    if (conversationsResult.status === "fulfilled") {
-      const conversationRows = Array.isArray(conversationsResult.value?.conversations)
-        ? conversationsResult.value.conversations
-        : [];
-      setConversations(conversationRows);
-      setTotalUnread(
-        Number.isFinite(conversationsResult.value?.total_unread)
-          ? conversationsResult.value.total_unread
-          : 0
-      );
-      setSelectedConversationId((previous) => {
-        if (previous && conversationRows.some((row) => row.id === previous)) {
-          return previous;
-        }
-        return conversationRows[0]?.id ?? null;
-      });
-    } else {
       setConversations([]);
       setTotalUnread(0);
       setSelectedConversationId(null);
-      errors.push(
-        toErrorMessage(conversationsResult.reason, "Unable to load conversations.", {
+      setStatusNote(
+        toErrorMessage(error, "Unable to load Social Arena.", {
           forSocialBootstrap: true
         })
       );
-    }
-
-    if (errors.length) {
-      const uniqueErrors = [...new Set(errors)];
-      setStatusNote(uniqueErrors[0]);
-    } else {
-      setStatusNote("");
-    }
-
-    if (!silent) {
-      setIsLoading(false);
+    } finally {
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -3452,12 +3478,12 @@ function SocialPage() {
   useEffect(() => {
     const userIds = new Set();
     conversations.forEach((conversation) => {
-      if (conversation.peer?.id) {
+      if (conversation?.peer?.id) {
         userIds.add(conversation.peer.id);
       }
     });
     friends.forEach((friendship) => {
-      if (friendship.friend?.id) {
+      if (friendship?.friend?.id) {
         userIds.add(friendship.friend.id);
       }
     });
@@ -4411,8 +4437,8 @@ function SocialPage() {
                         {initialsForUser(request.sender)}
                       </span>
                       <div className="social-item-copy">
-                        <p className="social-item-title">{request.sender.display_name}</p>
-                        <p className="social-item-subtitle">@{request.sender.username}</p>
+                        <p className="social-item-title">{displayNameForUser(request.sender)}</p>
+                        <p className="social-item-subtitle">{usernameForUser(request.sender)}</p>
                       </div>
                     </div>
                     <div className="social-item-actions">
@@ -4466,8 +4492,8 @@ function SocialPage() {
                         {initialsForUser(request.receiver)}
                       </span>
                       <div className="social-item-copy">
-                        <p className="social-item-title">{request.receiver.display_name}</p>
-                        <p className="social-item-subtitle">@{request.receiver.username}</p>
+                        <p className="social-item-title">{displayNameForUser(request.receiver)}</p>
+                        <p className="social-item-subtitle">{usernameForUser(request.receiver)}</p>
                       </div>
                     </div>
                     <div className="social-item-actions">
@@ -4507,7 +4533,7 @@ function SocialPage() {
                         {initialsForUser(friendship.friend)}
                       </span>
                       <div className="social-item-copy">
-                        <p className="social-item-title">{friendship.friend.display_name}</p>
+                        <p className="social-item-title">{displayNameForUser(friendship.friend)}</p>
                         <p className="social-item-subtitle">
                           Friends since {formatShortDate(friendship.created_at)}
                         </p>
@@ -4517,8 +4543,8 @@ function SocialPage() {
                       <button
                         type="button"
                         className="secondary-btn"
-                        onClick={() => handleStartConversation(friendship.friend.id)}
-                        disabled={actionLoadingKey === `start-chat-${friendship.friend.id}`}
+                        onClick={() => handleStartConversation(friendship.friend?.id)}
+                        disabled={!friendship.friend?.id || actionLoadingKey === `start-chat-${friendship.friend.id}`}
                       >
                         DM
                       </button>
@@ -4528,11 +4554,11 @@ function SocialPage() {
                         onClick={() =>
                           performAction(
                             `friend-remove-${friendship.id}`,
-                            () => removeFriend(friendship.friend.id),
+                            () => removeFriend(friendship.friend?.id),
                             "Friend removed."
                           )
                         }
-                        disabled={actionLoadingKey === `friend-remove-${friendship.id}`}
+                        disabled={!friendship.friend?.id || actionLoadingKey === `friend-remove-${friendship.id}`}
                       >
                         Remove
                       </button>
@@ -4552,7 +4578,7 @@ function SocialPage() {
               </div>
               <div className="social-list social-conversation-list">
                 {conversations.map((conversation) => {
-                  const peerPresence = conversation.peer?.id
+                  const peerPresence = conversation?.peer?.id
                     ? presenceByUserId[conversation.peer.id]
                     : null;
                   const activity = conversationActivity[conversation.id];
@@ -4589,8 +4615,12 @@ function SocialPage() {
                         </span>
                         <div className="social-conversation-copy">
                           <div className="social-conversation-title-row">
-                            <p className="social-item-title">{conversation.peer.display_name}</p>
-                            <p className="social-item-subtitle">@{conversation.peer.username}</p>
+                            <p className="social-item-title">
+                              {displayNameForUser(conversation.peer)}
+                            </p>
+                            <p className="social-item-subtitle">
+                              {usernameForUser(conversation.peer)}
+                            </p>
                           </div>
                           <p
                             className={`social-conversation-status ${
